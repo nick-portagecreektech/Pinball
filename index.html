@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#08110f">
   <meta name="description" content="Buck Fever — a Yooper deer-camp pinball game for phone and desktop.">
+  <link rel="preload" href="assets/yooper-playfield.jpg" as="image" type="image/jpeg">
   <title>Buck Fever — U.P. Pinball</title>
   <style>
     :root {
@@ -460,6 +461,7 @@
         align-self: end;
         grid-template-columns: minmax(0,1fr) auto auto auto;
         min-height: 78px;
+        gap: 8px;
       }
 
       .stage { grid-area: stage; }
@@ -467,6 +469,8 @@
       .controls { grid-area: controls; min-height: 78px; }
       .tiny-note { display: none; }
       .icon-button { display: grid; }
+      .game-head .brand-mark { display: none; }
+      .game-head .brand-name { font-size: 1.45rem; transform: none; }
 
       .field-guide {
         grid-area: guide;
@@ -668,11 +672,18 @@
       const W = 600;
       const H = 900;
       const BALL_RADIUS = 11;
-      const STEP = 1 / 120;
-      const MAX_SPEED = 1650;
+      const STEP = 1 / 180;
+      const GRAVITY = 530;
+      const MAX_SPEED = 1480;
+      const FLIPPER_RADIUS = 13;
       const HUNT_LETTERS = ["H", "U", "N", "T"];
       const canvas = document.getElementById("gameCanvas");
       const ctx = canvas.getContext("2d");
+      const playfieldArt = new Image();
+      let playfieldArtReady = false;
+      playfieldArt.decoding = "async";
+      playfieldArt.src = "assets/yooper-playfield.jpg";
+      playfieldArt.addEventListener("load", () => { playfieldArtReady = true; });
       const scoreEl = document.getElementById("score");
       const ballsEl = document.getElementById("balls");
       const bestEl = document.getElementById("best");
@@ -700,7 +711,6 @@
 
       const posts = [
         { x: 112, y: 673, r: 9 }, { x: 488, y: 673, r: 9 },
-        { x: 181, y: 741, r: 9 }, { x: 419, y: 741, r: 9 },
         { x: 505, y: 220, r: 8 }
       ];
 
@@ -722,16 +732,9 @@
         { x1: 489, y1: 606, x2: 406, y2: 704, side: 1 }
       ];
 
-      const trees = Array.from({ length: 34 }, (_, i) => ({
-        x: 75 + ((i * 137) % 410),
-        y: 205 + ((i * 83) % 420),
-        size: 4 + (i % 4),
-        alpha: .055 + (i % 3) * .018
-      }));
-
       const flippers = {
-        left: { x: 211, y: 754, len: 105, angle: .34, target: .34, omega: 0, side: -1 },
-        right: { x: 389, y: 754, len: 105, angle: Math.PI - .34, target: Math.PI - .34, omega: 0, side: 1 }
+        left: { x: 196, y: 756, len: 86, angle: .38, target: .38, omega: 0, side: -1 },
+        right: { x: 404, y: 756, len: 86, angle: Math.PI - .38, target: Math.PI - .38, omega: 0, side: 1 }
       };
 
       let state = "intro";
@@ -838,7 +841,18 @@
       }
 
       function spawnBall() {
-        ball = { x: 530, y: 780, vx: 0, vy: 0, r: BALL_RADIUS, inLane: true, trail: [] };
+        ball = {
+          x: 530,
+          y: 780,
+          vx: 0,
+          vy: 0,
+          r: BALL_RADIUS,
+          inLane: true,
+          launched: false,
+          trail: [],
+          restTime: 0,
+          flipperLock: 0
+        };
         charge = 0;
         charging = false;
         launchMeter.style.width = "0%";
@@ -919,8 +933,9 @@
         charging = false;
         if (ball && ball.inLane && ball.y > 700) {
           const power = .34 + charge * .66;
-          ball.vy = -1120 - 520 * power;
-          ball.vx = -8;
+          ball.launched = true;
+          ball.vy = -1050 - 360 * power;
+          ball.vx = -12;
           hitSound("launch");
           lanePulse = 1;
         }
@@ -931,8 +946,8 @@
       function setFlipper(side, down) {
         const flipper = flippers[side];
         const button = side === "left" ? leftButton : rightButton;
-        if (side === "left") flipper.target = down ? -.43 : .34;
-        else flipper.target = down ? Math.PI + .43 : Math.PI - .34;
+        if (side === "left") flipper.target = down ? -.5 : .38;
+        else flipper.target = down ? Math.PI + .5 : Math.PI - .38;
         button.classList.toggle("is-down", down);
         if (down) hitSound("flipper");
       }
@@ -1028,10 +1043,22 @@
         const dy = ball.y - point.y;
         const minDist = ball.r + radius;
         const dist2 = dx * dx + dy * dy;
-        if (dist2 >= minDist * minDist || dist2 < .0001) return false;
+        if (dist2 >= minDist * minDist) return false;
         const dist = Math.sqrt(dist2);
-        const nx = dx / dist;
-        const ny = dy / dist;
+        let nx;
+        let ny;
+        if (dist > .0001) {
+          nx = dx / dist;
+          ny = dy / dist;
+        } else {
+          const segmentLength = Math.hypot(x2 - x1, y2 - y1) || 1;
+          nx = (y1 - y2) / segmentLength;
+          ny = (x2 - x1) / segmentLength;
+          if (ball.vx * nx + ball.vy * ny > 0) {
+            nx *= -1;
+            ny *= -1;
+          }
+        }
         const overlap = minDist - dist;
         ball.x += nx * overlap;
         ball.y += ny * overlap;
@@ -1053,10 +1080,10 @@
         const dy = ball.y - target.y;
         const minDist = ball.r + target.r;
         const dist2 = dx * dx + dy * dy;
-        if (dist2 >= minDist * minDist || dist2 < .0001) return false;
+        if (dist2 >= minDist * minDist) return false;
         const dist = Math.sqrt(dist2);
-        const nx = dx / dist;
-        const ny = dy / dist;
+        const nx = dist > .0001 ? dx / dist : 0;
+        const ny = dist > .0001 ? dy / dist : -1;
         ball.x = target.x + nx * minDist;
         ball.y = target.y + ny * minDist;
         const toward = ball.vx * nx + ball.vy * ny;
@@ -1073,23 +1100,73 @@
 
       function updateFlipper(flipper, dt) {
         const previous = flipper.angle;
-        const response = 1 - Math.exp(-dt * 34);
+        const response = 1 - Math.exp(-dt * 42);
         flipper.angle += (flipper.target - flipper.angle) * response;
         flipper.omega = (flipper.angle - previous) / dt;
       }
 
       function collideFlipper(flipper) {
+        if (!ball) return false;
         const x2 = flipper.x + Math.cos(flipper.angle) * flipper.len;
         const y2 = flipper.y + Math.sin(flipper.angle) * flipper.len;
-        const hit = collideSegment(flipper.x, flipper.y, x2, y2, 13, .78, 0);
-        if (!hit || !ball) return;
         const point = closestPoint(ball.x, ball.y, flipper.x, flipper.y, x2, y2);
-        const active = Math.abs(flipper.omega) > 2;
-        if (active) {
-          const strength = Math.min(760, Math.abs(flipper.omega) * flipper.len * (.25 + point.t * .45));
-          ball.vy -= strength * .92;
-          ball.vx += flipper.side * -strength * .16;
+        const dx = ball.x - point.x;
+        const dy = ball.y - point.y;
+        const minDist = ball.r + FLIPPER_RADIUS;
+        const dist2 = dx * dx + dy * dy;
+        if (dist2 >= minDist * minDist) return false;
+
+        // The underside is intentionally non-trapping. A ball that reaches the
+        // apron passes toward the drain instead of being pinched behind a bat.
+        if (ball.y > point.y + 4) {
+          ball.y = Math.max(ball.y, point.y + minDist + 1);
+          ball.vy = Math.max(ball.vy, 95);
+          ball.vx += (300 - ball.x) * .035;
+          return false;
+        }
+
+        const dist = Math.sqrt(dist2);
+        const nx = dist > .0001 ? dx / dist : 0;
+        const ny = dist > .0001 ? dy / dist : -1;
+        const overlap = minDist - dist;
+        ball.x += nx * overlap;
+        ball.y += ny * overlap;
+
+        const armX = point.x - flipper.x;
+        const armY = point.y - flipper.y;
+        const surfaceVx = -flipper.omega * armY;
+        const surfaceVy = flipper.omega * armX;
+        const relativeNormal = (ball.vx - surfaceVx) * nx + (ball.vy - surfaceVy) * ny;
+
+        if (relativeNormal < 0) {
+          const impulse = (1 + .82) * relativeNormal;
+          ball.vx -= impulse * nx;
+          ball.vy -= impulse * ny;
+        }
+
+        const active = surfaceVy < -80 && point.t > .08;
+        if (active && ball.flipperLock <= 0) {
+          ball.vy = Math.min(ball.vy, -260 - point.t * 360);
+          ball.vx += flipper.side * -45 * point.t;
+          ball.flipperLock = .035;
           shake = Math.max(shake, 2);
+        }
+        return true;
+      }
+
+      function recoverLowerBall(dt) {
+        if (!ball || ball.inLane || ball.y < 690) return;
+        const speed = Math.hypot(ball.vx, ball.vy);
+        ball.restTime = speed < 58 ? ball.restTime + dt : Math.max(0, ball.restTime - dt * 2);
+
+        if (ball.y > 775 && (ball.x < 245 || ball.x > 355)) {
+          ball.vx += Math.sign(300 - ball.x) * 380 * dt;
+        }
+
+        if (ball.restTime > .48) {
+          ball.vx += Math.sign(300 - ball.x || 1) * 150;
+          ball.vy = Math.min(ball.vy, -220);
+          ball.restTime = 0;
         }
       }
 
@@ -1102,18 +1179,22 @@
           return;
         }
 
-        if (charging && ball.inLane && ball.y > 700) {
-          charge = Math.min(1, charge + dt * .72);
-          launchMeter.style.width = `${Math.round(charge * 100)}%`;
-          ball.y = 780 + Math.sin(performance.now() * .02) * charge * 4;
+        if (ball.inLane && !ball.launched) {
+          if (charging) {
+            charge = Math.min(1, charge + dt * .72);
+            launchMeter.style.width = `${Math.round(charge * 100)}%`;
+          }
+          ball.x = 530;
+          ball.y = 780 + (charging ? Math.sin(performance.now() * .02) * charge * 4 : 0);
           ball.vx = 0;
           ball.vy = 0;
           return;
         }
 
-        ball.vy += 610 * dt;
-        ball.vx *= Math.pow(.9992, dt * 120);
-        ball.vy *= Math.pow(.9997, dt * 120);
+        ball.flipperLock = Math.max(0, ball.flipperLock - dt);
+        ball.vy += GRAVITY * dt;
+        ball.vx *= Math.pow(.9989, dt * 120);
+        ball.vy *= Math.pow(.9994, dt * 120);
 
         const speed = Math.hypot(ball.vx, ball.vy);
         if (speed > MAX_SPEED) {
@@ -1124,11 +1205,11 @@
         ball.x += ball.vx * dt;
         ball.y += ball.vy * dt;
 
-        walls.forEach(w => collideSegment(...w, 2, .77, 0));
-        posts.forEach(post => collideCircle(post, .82, 0));
+        walls.forEach(w => collideSegment(...w, 2, .72, 0));
+        posts.forEach(post => collideCircle(post, .78, 0));
 
         slings.forEach((sling, index) => {
-          if (collideSegment(sling.x1, sling.y1, sling.x2, sling.y2, 9, .86, 310)) {
+          if (collideSegment(sling.x1, sling.y1, sling.x2, sling.y2, 9, .82, 230)) {
             if (!flashes.some(f => f.id === `s${index}` && f.life > .08)) {
               flashes.push({ id: `s${index}`, x: (sling.x1 + sling.x2) / 2, y: (sling.y1 + sling.y2) / 2, life: .28, max: .28 });
               addScore(350, (sling.x1 + sling.x2) / 2, (sling.y1 + sling.y2) / 2, "+350");
@@ -1138,7 +1219,7 @@
         });
 
         bumpers.forEach((bumper, index) => {
-          if (collideCircle(bumper, 1, 560)) {
+          if (collideCircle(bumper, .92, 430)) {
             if (!flashes.some(f => f.id === `b${index}` && f.life > .12)) {
               flashes.push({ id: `b${index}`, x: bumper.x, y: bumper.y, life: .34, max: .34 });
               addScore(750, bumper.x, bumper.y - bumper.r, "+750");
@@ -1151,7 +1232,7 @@
         });
 
         huntTargets.forEach((target, index) => {
-          if (collideCircle(target, .93, 210) && !hunt.has(target.letter)) {
+          if (collideCircle(target, .86, 150) && !hunt.has(target.letter)) {
             hunt.add(target.letter);
             addScore(2500, target.x, target.y - 25, `${target.letter} +2,500`);
             flashes.push({ id: `t${index}`, x: target.x, y: target.y, life: .5, max: .5 });
@@ -1173,6 +1254,7 @@
 
         collideFlipper(flippers.left);
         collideFlipper(flippers.right);
+        recoverLowerBall(dt);
 
         if (ball.inLane && ball.y < 205) ball.inLane = false;
 
@@ -1216,55 +1298,37 @@
       }
 
       function drawBackground() {
-        const gradient = ctx.createLinearGradient(0, 0, 0, H);
-        gradient.addColorStop(0, "#0d211b");
-        gradient.addColorStop(.45, "#0a1915");
-        gradient.addColorStop(1, "#07100e");
-        ctx.fillStyle = gradient;
+        ctx.fillStyle = "#07110f";
+        ctx.fillRect(0, 0, W, H);
+
+        if (playfieldArtReady) {
+          ctx.drawImage(playfieldArt, 0, 0, W, H);
+        } else {
+          const fallback = ctx.createLinearGradient(0, 0, 0, H);
+          fallback.addColorStop(0, "#12332d");
+          fallback.addColorStop(.55, "#0a1b17");
+          fallback.addColorStop(1, "#06100e");
+          ctx.fillStyle = fallback;
+          ctx.fillRect(0, 0, W, H);
+        }
+
+        const readabilityWash = ctx.createLinearGradient(0, 0, 0, H);
+        readabilityWash.addColorStop(0, "rgba(2,8,7,.18)");
+        readabilityWash.addColorStop(.42, "rgba(2,8,7,.34)");
+        readabilityWash.addColorStop(1, "rgba(2,8,7,.56)");
+        ctx.fillStyle = readabilityWash;
+        ctx.fillRect(0, 0, W, H);
+
+        const vignette = ctx.createRadialGradient(300, 380, 120, 300, 420, 520);
+        vignette.addColorStop(.25, "rgba(0,0,0,0)");
+        vignette.addColorStop(1, "rgba(0,0,0,.55)");
+        ctx.fillStyle = vignette;
         ctx.fillRect(0, 0, W, H);
 
         ctx.save();
-        ctx.globalAlpha = .22;
-        ctx.strokeStyle = "#86c5b1";
-        ctx.lineWidth = 1;
-        for (let y = 40; y < H; y += 28) {
-          ctx.beginPath();
-          ctx.moveTo(0, y);
-          for (let x = 0; x <= W; x += 20) {
-            ctx.lineTo(x, y + Math.sin((x + y) * .04) * 2);
-          }
-          ctx.stroke();
-        }
-        ctx.restore();
-
-        ctx.save();
-        trees.forEach(tree => {
-          ctx.globalAlpha = tree.alpha;
-          ctx.fillStyle = "#bcddca";
-          ctx.beginPath();
-          ctx.moveTo(tree.x, tree.y - tree.size * 4);
-          ctx.lineTo(tree.x - tree.size * 2.1, tree.y);
-          ctx.lineTo(tree.x + tree.size * 2.1, tree.y);
-          ctx.closePath();
-          ctx.fill();
-          ctx.beginPath();
-          ctx.moveTo(tree.x, tree.y - tree.size * 2.5);
-          ctx.lineTo(tree.x - tree.size * 2.6, tree.y + tree.size * 1.4);
-          ctx.lineTo(tree.x + tree.size * 2.6, tree.y + tree.size * 1.4);
-          ctx.closePath();
-          ctx.fill();
-        });
-        ctx.restore();
-
-        const moonGlow = ctx.createRadialGradient(300, 82, 2, 300, 82, 64);
-        moonGlow.addColorStop(0, "rgba(255,240,192,.22)");
-        moonGlow.addColorStop(1, "rgba(255,240,192,0)");
-        ctx.fillStyle = moonGlow;
-        ctx.fillRect(230, 15, 140, 130);
-
-        ctx.fillStyle = "rgba(5,13,11,.86)";
-        ctx.strokeStyle = "rgba(227,218,187,.26)";
-        ctx.lineWidth = 5;
+        ctx.strokeStyle = "rgba(0,0,0,.72)";
+        ctx.lineWidth = 13;
+        ctx.lineJoin = "round";
         ctx.beginPath();
         ctx.moveTo(56, 132);
         ctx.lineTo(58, 612);
@@ -1284,8 +1348,23 @@
         ctx.lineTo(478, 57);
         ctx.lineTo(139, 57);
         ctx.lineTo(96, 80);
-        ctx.closePath();
         ctx.stroke();
+        ctx.strokeStyle = "rgba(228,224,201,.48)";
+        ctx.lineWidth = 4;
+        ctx.stroke();
+        ctx.restore();
+
+        ctx.save();
+        ctx.globalAlpha = .13;
+        ctx.strokeStyle = "#d9f6ef";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(128, 90);
+        ctx.lineTo(58, 410);
+        ctx.moveTo(246, 62);
+        ctx.lineTo(116, 634);
+        ctx.stroke();
+        ctx.restore();
 
         ctx.save();
         ctx.strokeStyle = lanePulse ? `rgba(85,215,232,${.35 + lanePulse * .5})` : "rgba(85,215,232,.22)";
@@ -1426,61 +1505,49 @@
         });
       }
 
-      function drawBuckArt() {
-        ctx.save();
-        ctx.translate(300, 570);
-        ctx.globalAlpha = .15;
-        ctx.strokeStyle = "#e8d6aa";
-        ctx.lineWidth = 4;
-        ctx.lineCap = "round";
-        ctx.beginPath();
-        ctx.moveTo(0, 40);
-        ctx.lineTo(0, 3);
-        ctx.moveTo(-2, 7);
-        ctx.bezierCurveTo(-29, -7, -34, -31, -42, -49);
-        ctx.moveTo(-23, -9);
-        ctx.lineTo(-50, -15);
-        ctx.lineTo(-61, -34);
-        ctx.moveTo(-36, -18);
-        ctx.lineTo(-68, -27);
-        ctx.moveTo(2, 7);
-        ctx.bezierCurveTo(29, -7, 34, -31, 42, -49);
-        ctx.moveTo(23, -9);
-        ctx.lineTo(50, -15);
-        ctx.lineTo(61, -34);
-        ctx.moveTo(36, -18);
-        ctx.lineTo(68, -27);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.ellipse(0, 28, 21, 30, 0, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.restore();
-      }
-
       function drawFlipper(flipper) {
         const x2 = flipper.x + Math.cos(flipper.angle) * flipper.len;
         const y2 = flipper.y + Math.sin(flipper.angle) * flipper.len;
+        const nx = -Math.sin(flipper.angle);
+        const ny = Math.cos(flipper.angle);
+        const baseRadius = FLIPPER_RADIUS;
+        const tipRadius = 8;
         ctx.save();
-        ctx.lineCap = "round";
         ctx.shadowColor = "#ff5a1f";
-        ctx.shadowBlur = 13;
-        ctx.strokeStyle = "#ff5a1f";
-        ctx.lineWidth = 27;
+        ctx.shadowBlur = 16;
+        const rubber = ctx.createLinearGradient(flipper.x, flipper.y - 16, flipper.x, flipper.y + 16);
+        rubber.addColorStop(0, "#ff8a4d");
+        rubber.addColorStop(.4, "#ff4b17");
+        rubber.addColorStop(1, "#8e2307");
+        ctx.fillStyle = rubber;
+        ctx.strokeStyle = "#ffb17c";
+        ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.moveTo(flipper.x, flipper.y);
-        ctx.lineTo(x2, y2);
-        ctx.stroke();
-        ctx.shadowBlur = 0;
-        ctx.strokeStyle = "#f4e7c8";
-        ctx.lineWidth = 15;
-        ctx.beginPath();
-        ctx.moveTo(flipper.x, flipper.y);
-        ctx.lineTo(x2, y2);
-        ctx.stroke();
-        ctx.fillStyle = "#24140e";
-        ctx.beginPath();
-        ctx.arc(flipper.x, flipper.y, 8, 0, Math.PI * 2);
+        ctx.moveTo(flipper.x + nx * baseRadius, flipper.y + ny * baseRadius);
+        ctx.lineTo(x2 + nx * tipRadius, y2 + ny * tipRadius);
+        ctx.arc(x2, y2, tipRadius, flipper.angle + Math.PI / 2, flipper.angle - Math.PI / 2, true);
+        ctx.lineTo(flipper.x - nx * baseRadius, flipper.y - ny * baseRadius);
+        ctx.arc(flipper.x, flipper.y, baseRadius, flipper.angle - Math.PI / 2, flipper.angle + Math.PI / 2, true);
+        ctx.closePath();
         ctx.fill();
+        ctx.stroke();
+
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = "rgba(255,240,205,.72)";
+        ctx.lineWidth = 3;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(flipper.x + Math.cos(flipper.angle) * 12 - nx * 4, flipper.y + Math.sin(flipper.angle) * 12 - ny * 4);
+        ctx.lineTo(x2 - Math.cos(flipper.angle) * 12 - nx * 2, y2 - Math.sin(flipper.angle) * 12 - ny * 2);
+        ctx.stroke();
+
+        ctx.fillStyle = "#1b120e";
+        ctx.strokeStyle = "#dfb26a";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(flipper.x, flipper.y, 7, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
         ctx.restore();
       }
 
@@ -1577,7 +1644,6 @@
         drawTopper();
         drawHuntTargets();
         bumpers.forEach((bumper, index) => drawBumper(bumper, index, time));
-        drawBuckArt();
         drawSlings();
         posts.forEach(post => {
           ctx.fillStyle = "#d3dfd9";
@@ -1626,8 +1692,28 @@
           updateEffects(rawDt);
         }
 
+        updateDiagnostics();
         draw(time);
         requestAnimationFrame(frame);
+      }
+
+      function updateDiagnostics() {
+        const leftTip = {
+          x: flippers.left.x + Math.cos(flippers.left.angle) * flippers.left.len,
+          y: flippers.left.y + Math.sin(flippers.left.angle) * flippers.left.len
+        };
+        const rightTip = {
+          x: flippers.right.x + Math.cos(flippers.right.angle) * flippers.right.len,
+          y: flippers.right.y + Math.sin(flippers.right.angle) * flippers.right.len
+        };
+        canvas.dataset.gameState = state;
+        canvas.dataset.artReady = String(playfieldArtReady);
+        canvas.dataset.flipperGap = (Math.hypot(rightTip.x - leftTip.x, rightTip.y - leftTip.y) - 16).toFixed(1);
+        canvas.dataset.ball = ball
+          ? [ball.x, ball.y, ball.vx, ball.vy, ball.restTime, Number(ball.inLane), Number(ball.launched)]
+              .map(value => Math.round(value * 10) / 10)
+              .join(",")
+          : "";
       }
 
       overlayTitle.innerHTML = "Buck<br>Fever";
