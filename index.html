@@ -634,12 +634,14 @@
 
     <aside class="field-guide">
       <h2>Camp Rules</h2>
-      <p>Bank all four HUNT targets for Buck Fever and a 25,000-point camp bonus. The orange pop bumpers get hotter with every clean hit.</p>
+      <p>Bank HUNT for Buck Fever, drop CAMP for a camp bonus, and roll through U.P. to light the shoreline special.</p>
       <h3>Field Notes</h3>
       <dl>
         <dt>HUNT target</dt><dd>2,500</dd>
         <dt>Pop bumper</dt><dd>750</dd>
-        <dt>Slingshot</dt><dd>350</dd>
+        <dt>CAMP bank</dt><dd>5,000</dd>
+        <dt>U.P. lanes</dt><dd>3,000</dd>
+        <dt>Spinner</dt><dd>250</dd>
         <dt>Buck Fever</dt><dd>25,000</dd>
       </dl>
     </aside>
@@ -673,8 +675,8 @@
       const H = 900;
       const BALL_RADIUS = 11;
       const STEP = 1 / 180;
-      const GRAVITY = 530;
-      const MAX_SPEED = 1480;
+      const GRAVITY = 575;
+      const MAX_SPEED = 1250;
       const FLIPPER_RADIUS = 13;
       const HUNT_LETTERS = ["H", "U", "N", "T"];
       const canvas = document.getElementById("gameCanvas");
@@ -732,6 +734,20 @@
         { x1: 489, y1: 606, x2: 406, y2: 704, side: 1 }
       ];
 
+      const dropTargets = [
+        { x: 185, y: 548, r: 15, letter: "C", down: false },
+        { x: 235, y: 548, r: 15, letter: "A", down: false },
+        { x: 285, y: 548, r: 15, letter: "M", down: false },
+        { x: 335, y: 548, r: 15, letter: "P", down: false }
+      ];
+
+      const rollovers = [
+        { x: 424, y: 226, r: 8, letter: "U", lit: false },
+        { x: 466, y: 244, r: 8, letter: "P", lit: false }
+      ];
+
+      const spinner = { x: 424, y: 468, r: 20, angle: 0, spin: 0, cooldown: 0 };
+
       const flippers = {
         left: { x: 196, y: 756, len: 86, angle: .38, target: .38, omega: 0, side: -1 },
         right: { x: 404, y: 756, len: 86, angle: Math.PI - .38, target: Math.PI - .38, omega: 0, side: 1 }
@@ -758,6 +774,8 @@
       let resetTimer = 0;
       let lanePulse = 0;
       let feverFlash = 0;
+      let dropResetTimer = 0;
+      let rolloverResetTimer = 0;
 
       bestEl.textContent = formatScore(best);
 
@@ -831,6 +849,13 @@
         score = 0;
         balls = 3;
         hunt.clear();
+        dropTargets.forEach(target => { target.down = false; });
+        rollovers.forEach(rollover => { rollover.lit = false; });
+        spinner.angle = 0;
+        spinner.spin = 0;
+        spinner.cooldown = 0;
+        dropResetTimer = 0;
+        rolloverResetTimer = 0;
         particles = [];
         floaters = [];
         flashes = [];
@@ -1139,15 +1164,15 @@
         const relativeNormal = (ball.vx - surfaceVx) * nx + (ball.vy - surfaceVy) * ny;
 
         if (relativeNormal < 0) {
-          const impulse = (1 + .82) * relativeNormal;
+          const impulse = (1 + .68) * relativeNormal;
           ball.vx -= impulse * nx;
           ball.vy -= impulse * ny;
         }
 
         const active = surfaceVy < -80 && point.t > .08;
         if (active && ball.flipperLock <= 0) {
-          ball.vy = Math.min(ball.vy, -260 - point.t * 360);
-          ball.vx += flipper.side * -45 * point.t;
+          ball.vy = Math.min(ball.vy, -235 - point.t * 330);
+          ball.vx += flipper.side * -38 * point.t;
           ball.flipperLock = .035;
           shake = Math.max(shake, 2);
         }
@@ -1193,8 +1218,8 @@
 
         ball.flipperLock = Math.max(0, ball.flipperLock - dt);
         ball.vy += GRAVITY * dt;
-        ball.vx *= Math.pow(.9989, dt * 120);
-        ball.vy *= Math.pow(.9994, dt * 120);
+        ball.vx *= Math.pow(.9983, dt * 120);
+        ball.vy *= Math.pow(.9989, dt * 120);
 
         const speed = Math.hypot(ball.vx, ball.vy);
         if (speed > MAX_SPEED) {
@@ -1205,11 +1230,11 @@
         ball.x += ball.vx * dt;
         ball.y += ball.vy * dt;
 
-        walls.forEach(w => collideSegment(...w, 2, .72, 0));
-        posts.forEach(post => collideCircle(post, .78, 0));
+        walls.forEach(w => collideSegment(...w, 2, .58, 0));
+        posts.forEach(post => collideCircle(post, .62, 0));
 
         slings.forEach((sling, index) => {
-          if (collideSegment(sling.x1, sling.y1, sling.x2, sling.y2, 9, .82, 230)) {
+          if (collideSegment(sling.x1, sling.y1, sling.x2, sling.y2, 9, .64, 150)) {
             if (!flashes.some(f => f.id === `s${index}` && f.life > .08)) {
               flashes.push({ id: `s${index}`, x: (sling.x1 + sling.x2) / 2, y: (sling.y1 + sling.y2) / 2, life: .28, max: .28 });
               addScore(350, (sling.x1 + sling.x2) / 2, (sling.y1 + sling.y2) / 2, "+350");
@@ -1219,20 +1244,20 @@
         });
 
         bumpers.forEach((bumper, index) => {
-          if (collideCircle(bumper, .92, 430)) {
+          if (collideCircle(bumper, .72, 280)) {
             if (!flashes.some(f => f.id === `b${index}` && f.life > .12)) {
               flashes.push({ id: `b${index}`, x: bumper.x, y: bumper.y, life: .34, max: .34 });
               addScore(750, bumper.x, bumper.y - bumper.r, "+750");
               burst(bumper.x, bumper.y, index === 1 ? "#55d7e8" : "#ff7a32", 12);
               hitSound("bumper");
-              shake = Math.max(shake, 4);
+              shake = Math.max(shake, 2.5);
               navigator.vibrate?.(12);
             }
           }
         });
 
         huntTargets.forEach((target, index) => {
-          if (collideCircle(target, .86, 150) && !hunt.has(target.letter)) {
+          if (collideCircle(target, .5, 70) && !hunt.has(target.letter)) {
             hunt.add(target.letter);
             addScore(2500, target.x, target.y - 25, `${target.letter} +2,500`);
             flashes.push({ id: `t${index}`, x: target.x, y: target.y, life: .5, max: .5 });
@@ -1251,6 +1276,45 @@
             updateHud();
           }
         });
+
+        dropTargets.forEach((target, index) => {
+          if (!target.down && collideCircle(target, .42, 55)) {
+            target.down = true;
+            addScore(1000, target.x, target.y - 24, `${target.letter} +1,000`);
+            flashes.push({ id: `d${index}`, x: target.x, y: target.y, life: .4, max: .4 });
+            burst(target.x, target.y, "#d8aa54", 8);
+            hitSound("target");
+            if (dropTargets.every(item => item.down)) {
+              addScore(5000, 260, 510, "CAMP +5,000");
+              dropResetTimer = 1.4;
+              hitSound("fever");
+            }
+          }
+        });
+
+        rollovers.forEach((rollover, index) => {
+          const dx = ball.x - rollover.x;
+          const dy = ball.y - rollover.y;
+          const triggerRadius = ball.r + rollover.r + 3;
+          if (!rollover.lit && dx * dx + dy * dy < triggerRadius * triggerRadius) {
+            rollover.lit = true;
+            addScore(500, rollover.x, rollover.y - 18, `${rollover.letter} +500`);
+            flashes.push({ id: `r${index}`, x: rollover.x, y: rollover.y, life: .45, max: .45 });
+            tone(620 + index * 140, .08, "triangle", .035);
+            if (rollovers.every(item => item.lit)) {
+              addScore(3000, 445, 190, "U.P. +3,000");
+              rolloverResetTimer = 1.2;
+            }
+          }
+        });
+
+        if (collideCircle(spinner, .35, 35) && spinner.cooldown <= 0) {
+          spinner.spin = Math.sign(ball.vx || 1) * (12 + Math.min(12, Math.hypot(ball.vx, ball.vy) / 65));
+          spinner.cooldown = .2;
+          addScore(250, spinner.x, spinner.y - 28, "+250");
+          flashes.push({ id: "spinner", x: spinner.x, y: spinner.y, life: .3, max: .3 });
+          tone(880, .045, "square", .022);
+        }
 
         collideFlipper(flippers.left);
         collideFlipper(flippers.right);
@@ -1284,6 +1348,19 @@
         shake = Math.max(0, shake - dt * 28);
         lanePulse = Math.max(0, lanePulse - dt * 1.7);
         feverFlash = Math.max(0, feverFlash - dt * 1.2);
+        spinner.cooldown = Math.max(0, spinner.cooldown - dt);
+        spinner.angle += spinner.spin * dt;
+        spinner.spin *= Math.pow(.88, dt * 60);
+
+        if (dropResetTimer > 0) {
+          dropResetTimer -= dt;
+          if (dropResetTimer <= 0) dropTargets.forEach(target => { target.down = false; });
+        }
+
+        if (rolloverResetTimer > 0) {
+          rolloverResetTimer -= dt;
+          if (rolloverResetTimer <= 0) rollovers.forEach(rollover => { rollover.lit = false; });
+        }
       }
 
       function roundedRect(context, x, y, width, height, radius) {
@@ -1505,6 +1582,116 @@
         });
       }
 
+      function drawPinballHardware() {
+        ctx.save();
+        ctx.strokeStyle = "rgba(225,232,222,.6)";
+        ctx.lineWidth = 3;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(398, 196);
+        ctx.quadraticCurveTo(443, 178, 487, 213);
+        ctx.moveTo(402, 214);
+        ctx.quadraticCurveTo(444, 199, 486, 231);
+        ctx.stroke();
+
+        rollovers.forEach((rollover, index) => {
+          const flash = flashes.find(item => item.id === `r${index}`);
+          ctx.save();
+          ctx.translate(rollover.x, rollover.y);
+          if (rollover.lit || flash) {
+            ctx.shadowColor = "#55d7e8";
+            ctx.shadowBlur = 18;
+          }
+          ctx.fillStyle = rollover.lit ? "#dffaff" : "#132724";
+          ctx.strokeStyle = rollover.lit ? "#55d7e8" : "rgba(222,230,216,.48)";
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.arc(0, 0, 12, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = rollover.lit ? "#08312f" : "#b9c7bf";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.font = "900 12px ui-monospace, monospace";
+          ctx.fillText(rollover.letter, 0, 1);
+          ctx.restore();
+        });
+
+        ctx.strokeStyle = "rgba(224,231,217,.56)";
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.moveTo(158, 570);
+        ctx.lineTo(362, 570);
+        ctx.stroke();
+
+        dropTargets.forEach((target, index) => {
+          const flash = flashes.find(item => item.id === `d${index}`);
+          ctx.save();
+          ctx.translate(target.x, target.y + (target.down ? 15 : 0));
+          if (flash) {
+            ctx.shadowColor = "#ffba65";
+            ctx.shadowBlur = 20;
+          }
+          const height = target.down ? 11 : 42;
+          ctx.fillStyle = target.down ? "#4d3323" : "#f46a2a";
+          ctx.strokeStyle = target.down ? "#8f7251" : "#ffd29a";
+          ctx.lineWidth = 2.5;
+          roundedRect(ctx, -16, -height / 2, 32, height, 5);
+          ctx.fill();
+          ctx.stroke();
+          if (!target.down) {
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = "#fff2d2";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.font = "900 17px Impact, Arial Narrow, sans-serif";
+            ctx.fillText(target.letter, 0, 1);
+          }
+          ctx.restore();
+        });
+
+        const spinnerFlash = flashes.find(item => item.id === "spinner");
+        ctx.save();
+        ctx.translate(spinner.x, spinner.y);
+        ctx.fillStyle = "#d7e2dc";
+        [-29, 29].forEach(x => {
+          ctx.beginPath();
+          ctx.arc(x, 0, 6, 0, Math.PI * 2);
+          ctx.fill();
+        });
+        ctx.strokeStyle = "#778a84";
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(-29, 0);
+        ctx.lineTo(29, 0);
+        ctx.stroke();
+        ctx.rotate(spinner.angle);
+        if (spinnerFlash || Math.abs(spinner.spin) > 1) {
+          ctx.shadowColor = "#55d7e8";
+          ctx.shadowBlur = 16;
+        }
+        const blade = ctx.createLinearGradient(-24, 0, 24, 0);
+        blade.addColorStop(0, "#755220");
+        blade.addColorStop(.45, "#ffd57a");
+        blade.addColorStop(.55, "#fff3c2");
+        blade.addColorStop(1, "#755220");
+        ctx.fillStyle = blade;
+        ctx.strokeStyle = "#f5dd9f";
+        ctx.lineWidth = 2;
+        roundedRect(ctx, -25, -8, 50, 16, 4);
+        ctx.fill();
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = "#17110a";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.font = "900 8px ui-monospace, monospace";
+        ctx.fillText("250", 0, 1);
+        ctx.restore();
+        ctx.restore();
+      }
+
       function drawFlipper(flipper) {
         const x2 = flipper.x + Math.cos(flipper.angle) * flipper.len;
         const y2 = flipper.y + Math.sin(flipper.angle) * flipper.len;
@@ -1644,6 +1831,7 @@
         drawTopper();
         drawHuntTargets();
         bumpers.forEach((bumper, index) => drawBumper(bumper, index, time));
+        drawPinballHardware();
         drawSlings();
         posts.forEach(post => {
           ctx.fillStyle = "#d3dfd9";
@@ -1714,6 +1902,11 @@
               .map(value => Math.round(value * 10) / 10)
               .join(",")
           : "";
+        canvas.dataset.hardware = [
+          dropTargets.filter(target => target.down).length,
+          rollovers.filter(rollover => rollover.lit).length,
+          Math.round(Math.abs(spinner.spin) * 10) / 10
+        ].join(",");
       }
 
       overlayTitle.innerHTML = "Buck<br>Fever";
