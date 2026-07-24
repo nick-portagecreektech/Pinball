@@ -712,7 +712,7 @@
       ];
 
       const posts = [
-        { x: 112, y: 673, r: 9 }, { x: 488, y: 673, r: 9 },
+        { x: 88, y: 673, r: 9 }, { x: 498, y: 673, r: 9 },
         { x: 505, y: 220, r: 8 }
       ];
 
@@ -1189,7 +1189,7 @@
       }
 
       function recoverLowerBall(dt) {
-        if (!ball || ball.inLane || ball.y < 690) return;
+        if (!ball || ball.inLane || ball.y < 590) return;
         const speed = Math.hypot(ball.vx, ball.vy);
         ball.restTime = speed < 58 ? ball.restTime + dt : Math.max(0, ball.restTime - dt * 2);
 
