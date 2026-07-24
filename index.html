@@ -730,8 +730,8 @@
       ];
 
       const slings = [
-        { x1: 111, y1: 606, x2: 194, y2: 704, side: -1 },
-        { x1: 489, y1: 606, x2: 406, y2: 704, side: 1 }
+        { x1: 111, y1: 606, x2: 194, y2: 704, side: -1, contact: false, cooldown: 0 },
+        { x1: 489, y1: 606, x2: 406, y2: 704, side: 1, contact: false, cooldown: 0 }
       ];
 
       const inlaneGuides = [
@@ -856,6 +856,10 @@
         hunt.clear();
         dropTargets.forEach(target => { target.down = false; });
         rollovers.forEach(rollover => { rollover.lit = false; });
+        slings.forEach(sling => {
+          sling.contact = false;
+          sling.cooldown = 0;
+        });
         spinner.angle = 0;
         spinner.spin = 0;
         spinner.cooldown = 0;
@@ -1242,13 +1246,18 @@
         posts.forEach(post => collideCircle(post, .62, 0));
 
         slings.forEach((sling, index) => {
-          if (collideSegment(sling.x1, sling.y1, sling.x2, sling.y2, 9, .64, 150)) {
-            if (!flashes.some(f => f.id === `s${index}` && f.life > .08)) {
-              flashes.push({ id: `s${index}`, x: (sling.x1 + sling.x2) / 2, y: (sling.y1 + sling.y2) / 2, life: .28, max: .28 });
-              addScore(350, (sling.x1 + sling.x2) / 2, (sling.y1 + sling.y2) / 2, "+350");
-              burst(ball.x, ball.y, "#ff5a1f", 7);
-            }
+          const canFire = !sling.contact && sling.cooldown <= 0;
+          const collided = collideSegment(
+            sling.x1, sling.y1, sling.x2, sling.y2,
+            9, .42, canFire ? 55 : 0
+          );
+          if (collided && canFire) {
+            sling.cooldown = .22;
+            flashes.push({ id: `s${index}`, x: (sling.x1 + sling.x2) / 2, y: (sling.y1 + sling.y2) / 2, life: .28, max: .28 });
+            addScore(350, (sling.x1 + sling.x2) / 2, (sling.y1 + sling.y2) / 2, "+350");
+            burst(ball.x, ball.y, "#ff5a1f", 7);
           }
+          sling.contact = collided;
         });
 
         bumpers.forEach((bumper, index) => {
@@ -1356,6 +1365,9 @@
         shake = Math.max(0, shake - dt * 28);
         lanePulse = Math.max(0, lanePulse - dt * 1.7);
         feverFlash = Math.max(0, feverFlash - dt * 1.2);
+        slings.forEach(sling => {
+          sling.cooldown = Math.max(0, sling.cooldown - dt);
+        });
         spinner.cooldown = Math.max(0, spinner.cooldown - dt);
         spinner.angle += spinner.spin * dt;
         spinner.spin *= Math.pow(.88, dt * 60);
