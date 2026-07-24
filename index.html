@@ -734,6 +734,11 @@
         { x1: 489, y1: 606, x2: 406, y2: 704, side: 1 }
       ];
 
+      const inlaneGuides = [
+        { x1: 128, y1: 716, x2: 175, y2: 741 },
+        { x1: 472, y1: 716, x2: 425, y2: 741 }
+      ];
+
       const dropTargets = [
         { x: 185, y: 548, r: 15, letter: "C", down: false },
         { x: 235, y: 548, r: 15, letter: "A", down: false },
@@ -1231,6 +1236,9 @@
         ball.y += ball.vy * dt;
 
         walls.forEach(w => collideSegment(...w, 2, .58, 0));
+        inlaneGuides.forEach(guide => {
+          collideSegment(guide.x1, guide.y1, guide.x2, guide.y2, 6, .38, 0);
+        });
         posts.forEach(post => collideCircle(post, .62, 0));
 
         slings.forEach((sling, index) => {
@@ -1584,9 +1592,32 @@
 
       function drawPinballHardware() {
         ctx.save();
+        ctx.lineCap = "round";
+        inlaneGuides.forEach(guide => {
+          ctx.strokeStyle = "rgba(3,8,7,.88)";
+          ctx.lineWidth = 11;
+          ctx.beginPath();
+          ctx.moveTo(guide.x1, guide.y1);
+          ctx.lineTo(guide.x2, guide.y2);
+          ctx.stroke();
+
+          ctx.strokeStyle = "#9aa7a0";
+          ctx.lineWidth = 5;
+          ctx.beginPath();
+          ctx.moveTo(guide.x1, guide.y1);
+          ctx.lineTo(guide.x2, guide.y2);
+          ctx.stroke();
+
+          ctx.strokeStyle = "rgba(238,244,230,.72)";
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(guide.x1, guide.y1 - 1);
+          ctx.lineTo(guide.x2, guide.y2 - 1);
+          ctx.stroke();
+        });
+
         ctx.strokeStyle = "rgba(225,232,222,.6)";
         ctx.lineWidth = 3;
-        ctx.lineCap = "round";
         ctx.beginPath();
         ctx.moveTo(398, 196);
         ctx.quadraticCurveTo(443, 178, 487, 213);
