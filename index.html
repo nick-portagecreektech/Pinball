@@ -372,6 +372,39 @@
       box-shadow: 0 5px 0 #541405;
     }
 
+    .control.launch {
+      position: relative;
+      overflow: hidden;
+      border-color: rgba(85,215,232,.28);
+      background:
+        linear-gradient(90deg, transparent 49%, rgba(255,255,255,.055) 50%, transparent 51%),
+        linear-gradient(#1d2926, #0c1311);
+    }
+
+    .control.launch::after {
+      content: "";
+      position: absolute;
+      top: 8px;
+      right: 9px;
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: #52615b;
+      box-shadow: 0 0 0 2px rgba(0,0,0,.25);
+      transition: background .15s ease, box-shadow .15s ease;
+    }
+
+    .control.launch.is-ready {
+      border-color: rgba(85,215,232,.62);
+      box-shadow: 0 5px 0 #020504, 0 0 18px rgba(85,215,232,.12);
+    }
+
+    .control.launch.is-ready::after,
+    .control.launch.is-charging::after {
+      background: var(--lake);
+      box-shadow: 0 0 10px var(--lake);
+    }
+
     .control:active,
     .control.is-down {
       transform: translateY(4px);
@@ -402,18 +435,20 @@
     }
 
     .launch-meter {
-      width: 65%;
-      height: 3px;
+      width: 72%;
+      height: 5px;
       overflow: hidden;
-      border-radius: 2px;
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 3px;
       background: rgba(255,255,255,.13);
     }
 
     .launch-meter-fill {
       width: 0%;
       height: 100%;
-      background: var(--lake);
-      box-shadow: 0 0 10px var(--lake);
+      background: linear-gradient(90deg, var(--lake), #ffd26f, var(--orange));
+      box-shadow: 0 0 12px rgba(85,215,232,.8);
+      transition: width .04s linear;
     }
 
     .tiny-note {
@@ -653,8 +688,8 @@
         <span class="control-key">Z / ←</span>
       </button>
       <button class="control launch" id="launchButton" type="button" aria-label="Hold to charge the plunger">
-        <span class="control-label">Hold</span>
-        <span class="control-key">Launch / Space</span>
+        <span class="control-label">Plunger</span>
+        <span class="control-key" id="launchStatus">Ready • Space</span>
         <span class="launch-meter" aria-hidden="true"><span class="launch-meter-fill" id="launchMeter"></span></span>
       </button>
       <button class="control flipper" id="rightButton" type="button" aria-label="Right flipper">
@@ -678,6 +713,10 @@
       const GRAVITY = 575;
       const MAX_SPEED = 1250;
       const FLIPPER_RADIUS = 13;
+      const PLUNGER_X = 530;
+      const PLUNGER_Y = 780;
+      const SHOOTER_LANE_MIN_X = 508;
+      const SHOOTER_LANE_MAX_X = 542;
       const HUNT_LETTERS = ["H", "U", "N", "T"];
       const canvas = document.getElementById("gameCanvas");
       const ctx = canvas.getContext("2d");
@@ -695,6 +734,7 @@
       const overlayCopy = document.getElementById("overlayCopy");
       const startButton = document.getElementById("startButton");
       const launchMeter = document.getElementById("launchMeter");
+      const launchStatus = document.getElementById("launchStatus");
       const soundButton = document.getElementById("soundButton");
       const soundIcon = document.getElementById("soundIcon");
       const leftButton = document.getElementById("leftButton");
@@ -778,6 +818,7 @@
       let introTime = 0;
       let resetTimer = 0;
       let lanePulse = 0;
+      let plungerFlash = 0;
       let feverFlash = 0;
       let dropResetTimer = 0;
       let rolloverResetTimer = 0;
@@ -840,6 +881,9 @@
           tone(115, .035, "square", .024);
         } else if (kind === "launch") {
           tone(180, .14, "sawtooth", .035);
+        } else if (kind === "plunger-return") {
+          tone(260, .07, "triangle", .025);
+          tone(390, .05, "sine", .018, .035);
         } else if (kind === "fever") {
           [440, 554, 659, 880].forEach((f, i) => tone(f, .16, "triangle", .04, i * .075));
         } else if (kind === "drain") {
@@ -865,6 +909,7 @@
         spinner.cooldown = 0;
         dropResetTimer = 0;
         rolloverResetTimer = 0;
+        plungerFlash = 0;
         particles = [];
         floaters = [];
         flashes = [];
@@ -876,8 +921,8 @@
 
       function spawnBall() {
         ball = {
-          x: 530,
-          y: 780,
+          x: PLUNGER_X,
+          y: PLUNGER_Y,
           vx: 0,
           vy: 0,
           r: BALL_RADIUS,
@@ -887,10 +932,48 @@
           restTime: 0,
           flipperLock: 0
         };
+        settleBallOnPlunger(false);
+        resetTimer = 0;
+      }
+
+      function setPlungerState(nextState) {
+        const ready = nextState === "ready";
+        const chargingNow = nextState === "charging";
+        launchButton.dataset.state = nextState;
+        launchButton.classList.toggle("is-ready", ready);
+        launchButton.classList.toggle("is-charging", chargingNow);
+        launchStatus.textContent = {
+          ready: "Ready • Space",
+          charging: "Pulling…",
+          returning: "Ball returning",
+          inplay: "Return lane"
+        }[nextState] || "Hold • Space";
+        launchButton.setAttribute(
+          "aria-label",
+          ready ? "Hold to charge the plunger. Ball ready." : "Plunger unavailable while ball is in play."
+        );
+      }
+
+      function settleBallOnPlunger(returning) {
+        if (!ball) return;
+        ball.x = PLUNGER_X;
+        ball.y = PLUNGER_Y;
+        ball.vx = 0;
+        ball.vy = 0;
+        ball.inLane = true;
+        ball.launched = false;
+        ball.restTime = 0;
+        ball.trail = [];
         charge = 0;
         charging = false;
+        launchButton.classList.remove("is-down");
         launchMeter.style.width = "0%";
-        resetTimer = 0;
+        setPlungerState("ready");
+        if (returning) {
+          lanePulse = Math.max(lanePulse, .65);
+          plungerFlash = 1;
+          hitSound("plunger-return");
+        }
       }
 
       function drainBall() {
@@ -898,6 +981,7 @@
         hitSound("drain");
         balls -= 1;
         ball = null;
+        setPlungerState("inplay");
         resetTimer = 1.2;
         shake = 4;
         updateHud();
@@ -954,24 +1038,29 @@
       }
 
       function startCharge() {
-        if (state !== "playing" || !ball || !ball.inLane || ball.y < 720) return;
+        if (state !== "playing" || !ball || !ball.inLane || ball.launched || ball.y < 720) return;
         ensureAudio();
         charging = true;
         charge = Math.max(charge, .04);
         launchButton.classList.add("is-down");
+        setPlungerState("charging");
       }
 
       function releaseLaunch() {
         launchButton.classList.remove("is-down");
         if (!charging) return;
         charging = false;
-        if (ball && ball.inLane && ball.y > 700) {
-          const power = .34 + charge * .66;
+        if (ball && ball.inLane && !ball.launched && ball.y > 700) {
+          const pull = Math.max(.08, charge);
           ball.launched = true;
-          ball.vy = -1050 - 360 * power;
-          ball.vx = -12;
+          ball.vy = -760 - 430 * pull;
+          ball.vx = -18;
           hitSound("launch");
           lanePulse = 1;
+          plungerFlash = 1;
+          setPlungerState("inplay");
+        } else if (ball?.inLane && !ball.launched) {
+          setPlungerState("ready");
         }
         charge = 0;
         launchMeter.style.width = "0%";
@@ -1204,6 +1293,22 @@
         }
       }
 
+      function updateShooterLaneState() {
+        if (!ball?.launched || ball.vy <= 0) return false;
+        const insideShooterLane =
+          ball.x >= SHOOTER_LANE_MIN_X &&
+          ball.x <= SHOOTER_LANE_MAX_X &&
+          ball.y > 205;
+        if (!insideShooterLane) return false;
+
+        if (!ball.inLane) ball.inLane = true;
+        if (ball.y > 360) setPlungerState("returning");
+        if (ball.y < 765) return false;
+
+        settleBallOnPlunger(true);
+        return true;
+      }
+
       function physics(dt) {
         updateFlipper(flippers.left, dt);
         updateFlipper(flippers.right, dt);
@@ -1218,8 +1323,8 @@
             charge = Math.min(1, charge + dt * .72);
             launchMeter.style.width = `${Math.round(charge * 100)}%`;
           }
-          ball.x = 530;
-          ball.y = 780 + (charging ? Math.sin(performance.now() * .02) * charge * 4 : 0);
+          ball.x = PLUNGER_X;
+          ball.y = PLUNGER_Y;
           ball.vx = 0;
           ball.vy = 0;
           return;
@@ -1333,11 +1438,16 @@
           tone(880, .045, "square", .022);
         }
 
+        if (updateShooterLaneState()) return;
+
         collideFlipper(flippers.left);
         collideFlipper(flippers.right);
         recoverLowerBall(dt);
 
-        if (ball.inLane && ball.y < 205) ball.inLane = false;
+        if (ball.inLane && ball.y < 205) {
+          ball.inLane = false;
+          setPlungerState("inplay");
+        }
 
         if (ball.y > 880 || ball.x < -40 || ball.x > W + 40) drainBall();
 
@@ -1364,6 +1474,7 @@
         floaters = floaters.filter(f => f.life > 0);
         shake = Math.max(0, shake - dt * 28);
         lanePulse = Math.max(0, lanePulse - dt * 1.7);
+        plungerFlash = Math.max(0, plungerFlash - dt * 3.2);
         feverFlash = Math.max(0, feverFlash - dt * 1.2);
         slings.forEach(sling => {
           sling.cooldown = Math.max(0, sling.cooldown - dt);
@@ -1843,20 +1954,105 @@
       }
 
       function drawPlunger() {
+        const ready = Boolean(ball?.inLane && !ball.launched);
+        const pull = ready ? charge : 0;
+        const headY = 793 + pull * 18;
+        const knobY = 865 + pull * 8;
+        const glow = Math.max(plungerFlash, ready ? .28 : 0);
+
         ctx.save();
-        ctx.translate(530, 836);
-        ctx.strokeStyle = "#8b9b95";
-        ctx.lineWidth = 5;
-        ctx.beginPath();
-        for (let y = -30; y < 20; y += 8) {
-          ctx.moveTo(-9, y);
-          ctx.lineTo(9, y + 4);
-          ctx.lineTo(-9, y + 8);
+        if (glow > 0) {
+          ctx.shadowColor = "#55d7e8";
+          ctx.shadowBlur = 8 + glow * 18;
         }
-        ctx.stroke();
-        ctx.fillStyle = "#ff5a1f";
-        roundedRect(ctx, -16, 20 + charge * 11, 32, 13, 4);
+
+        ctx.fillStyle = "rgba(3,9,7,.82)";
+        ctx.strokeStyle = "rgba(171,190,180,.34)";
+        ctx.lineWidth = 2;
+        roundedRect(ctx, 511, 788, 38, 92, 9);
         ctx.fill();
+        ctx.stroke();
+
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = "rgba(220,233,224,.38)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(516, 797);
+        ctx.lineTo(516, 872);
+        ctx.moveTo(544, 797);
+        ctx.lineTo(544, 872);
+        ctx.stroke();
+
+        for (let index = 0; index < 4; index++) {
+          const y = 810 + index * 13;
+          ctx.strokeStyle = ready && index / 3 <= pull ? "#ff8a45" : "rgba(216,231,220,.24)";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(512, y);
+          ctx.lineTo(518, y);
+          ctx.stroke();
+        }
+
+        ctx.strokeStyle = "#64736e";
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(PLUNGER_X, headY + 9);
+        ctx.lineTo(PLUNGER_X, knobY - 5);
+        ctx.stroke();
+
+        const springTop = headY + 13;
+        const springBottom = knobY - 8;
+        const springSteps = 8;
+        ctx.strokeStyle = "#aebdb6";
+        ctx.lineWidth = 3.5;
+        ctx.lineJoin = "round";
+        ctx.beginPath();
+        ctx.moveTo(PLUNGER_X, springTop);
+        for (let index = 1; index < springSteps; index++) {
+          const progress = index / springSteps;
+          const x = PLUNGER_X + (index % 2 ? -9 : 9);
+          const y = springTop + (springBottom - springTop) * progress;
+          ctx.lineTo(x, y);
+        }
+        ctx.lineTo(PLUNGER_X, springBottom);
+        ctx.stroke();
+
+        if (glow > 0) {
+          ctx.shadowColor = ready ? "#55d7e8" : "#ff7a32";
+          ctx.shadowBlur = 10 + glow * 12;
+        }
+        const headMetal = ctx.createLinearGradient(0, headY, 0, headY + 11);
+        headMetal.addColorStop(0, "#eef8f2");
+        headMetal.addColorStop(.4, "#92a59e");
+        headMetal.addColorStop(1, "#394843");
+        ctx.fillStyle = headMetal;
+        ctx.strokeStyle = "#dbe8e1";
+        ctx.lineWidth = 2;
+        roundedRect(ctx, 513, headY, 34, 11, 4);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.shadowBlur = 0;
+        const knob = ctx.createLinearGradient(0, knobY - 6, 0, knobY + 7);
+        knob.addColorStop(0, "#ff8d4d");
+        knob.addColorStop(.45, "#ff5a1f");
+        knob.addColorStop(1, "#8f2408");
+        ctx.fillStyle = knob;
+        ctx.strokeStyle = "#ffb37f";
+        ctx.lineWidth = 2;
+        roundedRect(ctx, 513, knobY - 6, 34, 13, 5);
+        ctx.fill();
+        ctx.stroke();
+
+        if (ready) {
+          ctx.fillStyle = `rgba(85,215,232,${.45 + plungerFlash * .4})`;
+          ctx.beginPath();
+          ctx.moveTo(PLUNGER_X, 755);
+          ctx.lineTo(PLUNGER_X - 6, 764);
+          ctx.lineTo(PLUNGER_X + 6, 764);
+          ctx.closePath();
+          ctx.fill();
+        }
         ctx.restore();
       }
 
@@ -1949,6 +2145,12 @@
           dropTargets.filter(target => target.down).length,
           rollovers.filter(rollover => rollover.lit).length,
           Math.round(Math.abs(spinner.spin) * 10) / 10
+        ].join(",");
+        canvas.dataset.plunger = [
+          Math.round(charge * 100) / 100,
+          Number(charging),
+          Number(Boolean(ball?.inLane && !ball.launched)),
+          launchButton.dataset.state || ""
         ].join(",");
       }
 
