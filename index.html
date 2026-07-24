@@ -141,12 +141,45 @@
       line-height: 1;
     }
 
+    .score-meta {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 5px;
+      margin-bottom: 4px;
+    }
+
     .score-label,
     .ball-label {
       display: block;
       color: var(--muted);
       font-size: .55rem;
       margin-bottom: 4px;
+    }
+
+    .score-meta .score-label { margin-bottom: 0; }
+
+    .bonus-status {
+      min-width: 31px;
+      padding: 2px 4px 1px;
+      border: 1px solid rgba(255,255,255,.11);
+      border-radius: 3px;
+      color: #66726b;
+      font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+      font-size: .43rem;
+      font-weight: 900;
+      letter-spacing: .05em;
+      line-height: 1;
+      text-align: center;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .bonus-status.active {
+      border-color: rgba(85,215,232,.5);
+      color: #dffcff;
+      background: rgba(85,215,232,.1);
+      box-shadow: 0 0 12px rgba(85,215,232,.18);
     }
 
     #score,
@@ -632,7 +665,10 @@
         </div>
       </div>
       <div class="scorebox">
-        <span class="score-label">Score</span>
+        <div class="score-meta">
+          <span class="score-label">Score</span>
+          <span class="bonus-status" id="bonusStatus" aria-live="polite">Bonus</span>
+        </div>
         <span id="score" aria-live="polite">0000000</span>
       </div>
       <div class="ballbox">
@@ -669,15 +705,15 @@
 
     <aside class="field-guide">
       <h2>Camp Rules</h2>
-      <p>Bank HUNT for Buck Fever, drop CAMP for a camp bonus, and roll through U.P. to light the shoreline special.</p>
+      <p>Complete table objectives to unlock saves and timed score multipliers.</p>
       <h3>Field Notes</h3>
       <dl>
         <dt>HUNT target</dt><dd>2,500</dd>
         <dt>Pop bumper</dt><dd>750</dd>
-        <dt>CAMP bank</dt><dd>5,000</dd>
-        <dt>U.P. lanes</dt><dd>3,000</dd>
+        <dt>CAMP complete</dt><dd>Trail Save</dd>
+        <dt>U.P. complete</dt><dd>2× • 12 sec</dd>
+        <dt>Buck Fever</dt><dd>3× • 10 sec</dd>
         <dt>Spinner</dt><dd>250</dd>
-        <dt>Buck Fever</dt><dd>25,000</dd>
       </dl>
     </aside>
 
@@ -726,6 +762,7 @@
       playfieldArt.src = "assets/yooper-playfield.jpg";
       playfieldArt.addEventListener("load", () => { playfieldArtReady = true; });
       const scoreEl = document.getElementById("score");
+      const bonusStatus = document.getElementById("bonusStatus");
       const ballsEl = document.getElementById("balls");
       const bestEl = document.getElementById("best");
       const overlay = document.getElementById("gameOverlay");
@@ -820,6 +857,9 @@
       let lanePulse = 0;
       let plungerFlash = 0;
       let feverFlash = 0;
+      let scoreMultiplier = 1;
+      let multiplierTimer = 0;
+      let ballSaveArmed = false;
       let dropResetTimer = 0;
       let rolloverResetTimer = 0;
 
@@ -834,6 +874,11 @@
         ballsEl.textContent = balls;
         bestEl.textContent = formatScore(best);
         huntEls.forEach(el => el.classList.toggle("lit", hunt.has(el.dataset.letter)));
+        const bonuses = [];
+        if (multiplierTimer > 0) bonuses.push(`${scoreMultiplier}X ${Math.ceil(multiplierTimer)}s`);
+        if (ballSaveArmed) bonuses.push("SAVE");
+        bonusStatus.textContent = bonuses.join(" • ") || "Bonus";
+        bonusStatus.classList.toggle("active", bonuses.length > 0);
       }
 
       function resizeCanvas() {
@@ -884,6 +929,11 @@
         } else if (kind === "plunger-return") {
           tone(260, .07, "triangle", .025);
           tone(390, .05, "sine", .018, .035);
+        } else if (kind === "bonus") {
+          [520, 660, 820].forEach((frequency, index) => tone(frequency, .11, "triangle", .028, index * .045));
+        } else if (kind === "save") {
+          tone(240, .12, "sawtooth", .03);
+          tone(480, .12, "triangle", .028, .06);
         } else if (kind === "fever") {
           [440, 554, 659, 880].forEach((f, i) => tone(f, .16, "triangle", .04, i * .075));
         } else if (kind === "drain") {
@@ -897,6 +947,9 @@
         paused = false;
         score = 0;
         balls = 3;
+        scoreMultiplier = 1;
+        multiplierTimer = 0;
+        ballSaveArmed = false;
         hunt.clear();
         dropTargets.forEach(target => { target.down = false; });
         rollovers.forEach(rollover => { rollover.lit = false; });
@@ -978,6 +1031,18 @@
 
       function drainBall() {
         if (!ball || resetTimer > 0) return;
+        if (ballSaveArmed) {
+          ballSaveArmed = false;
+          settleBallOnPlunger(false);
+          lanePulse = 1;
+          plungerFlash = 1;
+          shake = 3;
+          floaters.push({ x: 300, y: 740, text: "TRAIL SAVE!", life: 1.4, max: 1.4 });
+          burst(300, 770, "#55d7e8", 14);
+          hitSound("save");
+          updateHud();
+          return;
+        }
         hitSound("drain");
         balls -= 1;
         ball = null;
@@ -1015,9 +1080,39 @@
       }
 
       function addScore(points, x, y, label) {
-        score += points;
+        const awarded = Math.round(points * scoreMultiplier);
+        score += awarded;
         if (score > best) best = score;
-        floaters.push({ x, y, text: label || `+${points.toLocaleString()}`, life: 1, max: 1 });
+        const text = label
+          ? `${label}${scoreMultiplier > 1 ? ` ×${scoreMultiplier}` : ""}`
+          : `+${awarded.toLocaleString()}`;
+        floaters.push({ x, y, text, life: 1, max: 1 });
+        updateHud();
+      }
+
+      function announceBonus(text, x, y, color) {
+        floaters.push({ x, y, text, life: 1.6, max: 1.6 });
+        burst(x, y + 12, color, 16);
+        hitSound("bonus");
+        shake = Math.max(shake, 4);
+      }
+
+      function activateMultiplier(multiplier, seconds, label, x, y) {
+        let announcement = label;
+        if (multiplier > scoreMultiplier) {
+          scoreMultiplier = multiplier;
+          multiplierTimer = seconds;
+        } else {
+          multiplierTimer = Math.max(multiplierTimer, seconds);
+          if (multiplier < scoreMultiplier) announcement = `${scoreMultiplier}X EXTENDED`;
+        }
+        announceBonus(announcement, x, y, multiplier === 3 ? "#ff7a32" : "#55d7e8");
+        updateHud();
+      }
+
+      function armTrailSave() {
+        ballSaveArmed = true;
+        announceBonus("TRAIL SAVE ARMED", 260, 500, "#d8aa54");
         updateHud();
       }
 
@@ -1387,6 +1482,7 @@
             hitSound("target");
             if (hunt.size === 4) {
               addScore(25000, 300, 370, "BUCK FEVER +25,000");
+              activateMultiplier(3, 10, "BUCK FEVER 3X • 10s", 300, 330);
               feverFlash = 1;
               shake = 9;
               hitSound("fever");
@@ -1408,6 +1504,7 @@
             hitSound("target");
             if (dropTargets.every(item => item.down)) {
               addScore(5000, 260, 510, "CAMP +5,000");
+              armTrailSave();
               dropResetTimer = 1.4;
               hitSound("fever");
             }
@@ -1425,6 +1522,7 @@
             tone(620 + index * 140, .08, "triangle", .035);
             if (rollovers.every(item => item.lit)) {
               addScore(3000, 445, 190, "U.P. +3,000");
+              activateMultiplier(2, 12, "YOOPER 2X • 12s", 445, 170);
               rolloverResetTimer = 1.2;
             }
           }
@@ -1476,6 +1574,17 @@
         lanePulse = Math.max(0, lanePulse - dt * 1.7);
         plungerFlash = Math.max(0, plungerFlash - dt * 3.2);
         feverFlash = Math.max(0, feverFlash - dt * 1.2);
+        if (state === "playing" && !paused && multiplierTimer > 0) {
+          const previousSecond = Math.ceil(multiplierTimer);
+          multiplierTimer = Math.max(0, multiplierTimer - dt);
+          if (multiplierTimer <= 0) {
+            scoreMultiplier = 1;
+            floaters.push({ x: 300, y: 180, text: "BONUS ENDED", life: 1.1, max: 1.1 });
+            updateHud();
+          } else if (Math.ceil(multiplierTimer) !== previousSecond) {
+            updateHud();
+          }
+        }
         slings.forEach(sling => {
           sling.cooldown = Math.max(0, sling.cooldown - dt);
         });
@@ -2151,6 +2260,11 @@
           Number(charging),
           Number(Boolean(ball?.inLane && !ball.launched)),
           launchButton.dataset.state || ""
+        ].join(",");
+        canvas.dataset.bonus = [
+          scoreMultiplier,
+          Math.round(multiplierTimer * 10) / 10,
+          Number(ballSaveArmed)
         ].join(",");
       }
 
