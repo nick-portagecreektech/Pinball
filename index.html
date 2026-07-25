@@ -918,6 +918,10 @@
       let multiball = false;
       let lockCount = 0;
       let lockedBall = null;
+      let jackpot = 0;
+      let jackpotLit = false;
+      let jackpotsCollected = 0;
+      let superJackpotReady = false;
 
       bestEl.textContent = formatScore(best);
 
@@ -948,8 +952,11 @@
         bestEl.textContent = formatScore(best);
         huntEls.forEach(el => el.classList.toggle("lit", hunt.has(el.dataset.letter)));
         const bonuses = [];
-        if (multiball) bonuses.push("MULTIBALL");
-        else if (lockCount > 0) bonuses.push("BALL LOCKED");
+        if (multiball) {
+          bonuses.push("MULTIBALL");
+          if (superJackpotReady) bonuses.push("SUPER JP");
+          else if (jackpotLit) bonuses.push("JACKPOT");
+        } else if (lockCount > 0) bonuses.push("BALL LOCKED");
         if (multiplierTimer > 0) bonuses.push(`${scoreMultiplier}X ${Math.ceil(multiplierTimer)}s`);
         if (bonusMultiplier > 1) bonuses.push(`B×${bonusMultiplier}${holdBonus ? " HOLD" : ""}`);
         if (ballSaveArmed) bonuses.push("SAVE");
@@ -1047,6 +1054,10 @@
         multiball = false;
         lockCount = 0;
         lockedBall = null;
+        jackpot = 0;
+        jackpotLit = false;
+        jackpotsCollected = 0;
+        superJackpotReady = false;
         hunt.clear();
         dropTargets.forEach(target => { target.down = false; });
         rollovers.forEach(rollover => { rollover.lit = false; });
@@ -1850,6 +1861,7 @@
               flashes.push({ id: `b${index}`, x: bumper.x, y: bumper.y, life: .34, max: .34 });
               bumperHits += 1;
               disarmSkillShot();
+              if (multiball) jackpot += 500;
               addScore(750, bumper.x, bumper.y - bumper.r, "+750");
               burst(bumper.x, bumper.y, index === 1 ? "#55d7e8" : "#ff7a32", 12);
               hitSound("bumper");
@@ -1972,6 +1984,7 @@
           flashes.push({ id: "spinner", x: spinner.x, y: spinner.y, life: .3, max: .3 });
           tone(880, .045, "square", .022);
           registerCombo(spinner.x, spinner.y);
+          if (multiball && jackpotLit) collectJackpot();
         }
 
         // Secret skill shot: reach the top-left orbit untouched off the plunge.
@@ -2056,10 +2069,12 @@
         ball.vy = 0;
 
         if (multiball) {
-          // During multiball the scoop is a quick relight + eject.
+          // During multiball the scoop relights the jackpot then ejects.
           ball.held = 0.6;
+          jackpotLit = true;
+          announceBonus("JACKPOT LIT", scoop.x, scoop.y - 40, "#ffd26f");
           addScore(2500, scoop.x, scoop.y - 26, "SCOOP +2,500");
-          hitSound("bonus");
+          updateHud();
           return;
         }
 
@@ -2079,6 +2094,30 @@
         startMultiball();
       }
 
+      // Collected at the spinner during multiball. Every third jackpot arms the
+      // super jackpot; the scoop relights the jackpot between collects.
+      function collectJackpot() {
+        if (superJackpotReady) {
+          const value = jackpot * 3;
+          score += value;
+          if (score > best) best = score;
+          announceBonus(`SUPER JACKPOT +${value.toLocaleString()}`, 300, 300, "#ff7a32");
+          feverFlash = Math.max(feverFlash, 0.6);
+          superJackpotReady = false;
+          jackpotsCollected = 0;
+        } else {
+          score += jackpot;
+          if (score > best) best = score;
+          announceBonus(`JACKPOT +${jackpot.toLocaleString()}`, spinner.x, spinner.y - 30, "#ffd26f");
+          jackpotsCollected += 1;
+          if (jackpotsCollected >= 3) superJackpotReady = true;
+        }
+        jackpotLit = false;
+        jackpot += 5000;
+        shake = Math.max(shake, 5);
+        updateHud();
+      }
+
       function ejectFromScoop(b = ball) {
         b.y = scoop.y - (scoop.r + b.r + 2);
         b.vy = -560;
@@ -2095,6 +2134,10 @@
       function startMultiball() {
         multiball = true;
         lockCount = 0;
+        jackpot = 25000;
+        jackpotLit = true;
+        jackpotsCollected = 0;
+        superJackpotReady = false;
         scoop.flash = 1;
         const locked = lockedBall;
         lockedBall = null;
