@@ -770,6 +770,7 @@
       const SHOOTER_LANE_MIN_X = 508;
       const SHOOTER_LANE_MAX_X = 542;
       const HUNT_LETTERS = ["H", "U", "N", "T"];
+      const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
       const canvas = document.getElementById("gameCanvas");
       const ctx = canvas.getContext("2d");
       const playfieldArt = new Image();
@@ -2290,6 +2291,62 @@
         ctx.restore();
       }
 
+      // General-illumination + insert layer. Drawn additively UNDER the drawn
+      // hardware so the whole cabinet reads as electrified: a slow breathing GI
+      // wash that flares on fever / active multiplier, plus a painted glow under
+      // every target, lane and bumper that brightens when its insert is lit.
+      function drawGI(time) {
+        const breathe = reduceMotion ? 0.5 : 0.5 + 0.5 * Math.sin(time * 0.0012);
+        const feverBoost = feverFlash * 0.5;
+        const modeBoost = state === "playing" && multiplierTimer > 0 ? 0.16 : 0;
+        const bright = 0.11 + breathe * 0.05 + feverBoost * 0.4 + modeBoost;
+
+        ctx.save();
+        ctx.globalCompositeOperation = "lighter";
+
+        const wash = ctx.createRadialGradient(300, 300, 40, 300, 340, 540);
+        wash.addColorStop(0, `rgba(70,150,120,${bright.toFixed(3)})`);
+        wash.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = wash;
+        ctx.fillRect(0, 0, W, H);
+
+        const lower = ctx.createRadialGradient(300, 770, 20, 300, 770, 320);
+        lower.addColorStop(0, `rgba(255,110,45,${(0.05 + feverBoost * 0.5).toFixed(3)})`);
+        lower.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = lower;
+        ctx.fillRect(0, 0, W, H);
+
+        const insert = (x, y, r, rgb, intensity) => {
+          const a = Math.min(0.6, 0.08 + intensity * 0.5);
+          const g = ctx.createRadialGradient(x, y, 2, x, y, r);
+          g.addColorStop(0, `rgba(${rgb},${a.toFixed(3)})`);
+          g.addColorStop(1, `rgba(${rgb},0)`);
+          ctx.fillStyle = g;
+          ctx.fillRect(x - r, y - r, r * 2, r * 2);
+        };
+        const flashPulse = id => {
+          const f = flashes.find(item => item.id === id);
+          return f ? f.life / f.max : 0;
+        };
+
+        huntTargets.forEach((t, i) => {
+          const lit = hunt.has(t.letter) ? 0.5 : 0.12;
+          insert(t.x, t.y, 46, "255,140,50", lit + flashPulse(`t${i}`) * 0.6 + breathe * 0.05);
+        });
+        dropTargets.forEach((t, i) => {
+          insert(t.x, t.y, 34, "216,170,84", (t.down ? 0.08 : 0.26) + flashPulse(`d${i}`) * 0.5);
+        });
+        rollovers.forEach((ro, i) => {
+          insert(ro.x, ro.y, 28, "85,215,232", (ro.lit ? 0.5 : 0.14) + flashPulse(`r${i}`) * 0.5);
+        });
+        bumpers.forEach((b, i) => {
+          const rgb = i === 1 ? "85,215,232" : "255,110,45";
+          insert(b.x, b.y, b.r + 22, rgb, 0.16 + flashPulse(`b${i}`) * 0.6 + feverBoost * 0.6);
+        });
+
+        ctx.restore();
+      }
+
       function drawBonus() {
         if (!bonusSeq) return;
         const seq = bonusSeq;
@@ -2348,6 +2405,7 @@
         ctx.save();
         ctx.translate(shakeX, shakeY);
         drawBackground();
+        drawGI(time);
         drawTopper();
         drawHuntTargets();
         bumpers.forEach((bumper, index) => drawBumper(bumper, index, time));
