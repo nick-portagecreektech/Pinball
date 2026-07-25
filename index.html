@@ -1907,6 +1907,23 @@
 
       function stepBall(dt) {
         if (ball.inLane && !ball.launched) {
+          // With more than one ball in play (multiball, or a ball locked while
+          // another is loose), the manual plunger can only drive one ball and
+          // may be pointed at the wrong one — so auto-launch any ball that lands
+          // on the plunger instead of stranding it there.
+          if (activeBallCount() > 1) {
+            ball.inLane = false;
+            ball.launched = true;
+            ball.x = PLUNGER_X;
+            ball.y = 724;
+            ball.vx = -20;
+            ball.vy = -1120;
+            lanePulse = 1;
+            plungerFlash = 1;
+            setPlungerState("inplay");
+            hitSound("launch");
+            return;
+          }
           if (charging) {
             charge = Math.min(1, charge + dt * .72);
             launchMeter.style.width = `${Math.round(charge * 100)}%`;
