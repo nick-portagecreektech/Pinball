@@ -2311,6 +2311,19 @@
           f.y -= 35 * dt;
         });
         floaters = floaters.filter(f => f.life > 0);
+        // F6: during fever, sparks stream from each HUNT target toward center.
+        if (feverFlash > 0.3 && !reduceMotion) {
+          huntTargets.forEach(t => {
+            if (Math.random() < 0.28) {
+              const ang = Math.atan2(400 - t.y, 300 - t.x);
+              particles.push({
+                x: t.x, y: t.y,
+                vx: Math.cos(ang) * 200, vy: Math.sin(ang) * 200,
+                life: 0.5, max: 0.6, color: "#ffd27a", size: 2 + Math.random() * 2
+              });
+            }
+          });
+        }
         shake = Math.max(0, shake - dt * 28);
         lanePulse = Math.max(0, lanePulse - dt * 1.7);
         plungerFlash = Math.max(0, plungerFlash - dt * 3.2);
@@ -2463,6 +2476,54 @@
         ctx.restore();
       }
 
+      // F4: a DMD-style dot-matrix band across the top — score plus a scrolling
+      // ticker that reflects the current mode / multiball / wizard state.
+      function drawDMD(time) {
+        const bx = 92, by = 8, bw = 416, bh = 30;
+        ctx.save();
+        ctx.fillStyle = "#080b08";
+        roundedRect(ctx, bx, by, bw, bh, 5);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,150,50,.35)";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        roundedRect(ctx, bx, by, bw, bh, 5);
+        ctx.clip();
+
+        const amber = feverFlash > 0 ? "#ffe0a0" : multiball ? "#7cf0ff" : "#ff9a3c";
+        ctx.fillStyle = amber;
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.font = "900 18px ui-monospace, monospace";
+        ctx.fillText(formatScore(score), bx + 8, by + bh / 2 + 1);
+
+        const msg = wizard ? "OPENING DAY • ALL SHOTS 2X • "
+          : multiball ? "MULTIBALL • SPINNER COLLECTS JACKPOT • "
+          : modeActive ? `${modeActive.name} • ${modeActive.hint} • `
+          : "BUCK FEVER • LIGHT H-U-N-T • WAKE THE CAMP • ";
+        const tx = bx + 150;
+        const tw = bw - 158;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(tx, by, tw, bh);
+        ctx.clip();
+        ctx.font = "900 12px ui-monospace, monospace";
+        const textWidth = ctx.measureText(msg).width;
+        const scroll = reduceMotion ? 0 : (time * 0.06) % textWidth;
+        ctx.fillText(msg, tx + tw - scroll, by + bh / 2 + 1);
+        ctx.fillText(msg, tx + tw - scroll - textWidth, by + bh / 2 + 1);
+        ctx.restore();
+
+        // dot-matrix mesh: dark grid breaks the lit text into dots
+        ctx.fillStyle = "rgba(4,7,5,.5)";
+        for (let y = by; y < by + bh; y += 3) {
+          for (let x = bx; x < bx + bw; x += 3) {
+            ctx.fillRect(x + 1, y + 1, 1.3, 1.3);
+          }
+        }
+        ctx.restore();
+      }
+
       function drawTopper() {
         ctx.save();
         ctx.translate(300, 92);
@@ -2515,6 +2576,12 @@
       function drawBumper(bumper, index, time) {
         const flash = flashes.find(f => f.id === `b${index}`);
         const pulse = flash ? flash.life / flash.max : 0;
+        // F3: cap briefly scales up on a hit; ring color-cycles during fever.
+        const capR = bumper.r * (1 + pulse * 0.06);
+        const feverCycle = feverFlash > 0
+          ? `hsl(${Math.round((time * 0.18 + index * 90) % 360)}, 90%, 62%)`
+          : null;
+        const rimColor = feverCycle || (index === 1 ? "#55d7e8" : "#ff6b2b");
         ctx.save();
         ctx.translate(bumper.x, bumper.y);
         const glow = ctx.createRadialGradient(0, 0, 6, 0, 0, bumper.r + 32 + pulse * 18);
@@ -2524,20 +2591,20 @@
         ctx.fillRect(-90, -90, 180, 180);
 
         ctx.fillStyle = "#070c0a";
-        ctx.strokeStyle = index === 1 ? "#55d7e8" : "#ff6b2b";
+        ctx.strokeStyle = rimColor;
         ctx.lineWidth = 6 + pulse * 4;
         ctx.beginPath();
-        ctx.arc(0, 0, bumper.r, 0, Math.PI * 2);
+        ctx.arc(0, 0, capR, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
 
         ctx.save();
         ctx.rotate(time * .00035 + bumper.phase);
         ctx.setLineDash([5, 8]);
-        ctx.strokeStyle = "rgba(255,238,199,.55)";
+        ctx.strokeStyle = feverCycle ? "rgba(255,255,255,.75)" : "rgba(255,238,199,.55)";
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.arc(0, 0, bumper.r - 9, 0, Math.PI * 2);
+        ctx.arc(0, 0, capR - 9, 0, Math.PI * 2);
         ctx.stroke();
         ctx.restore();
 
@@ -2766,18 +2833,33 @@
         ballList.forEach(drawOneBall);
       }
 
+      const BALL_TINTS = ["#dceee7", "#ffd9a0", "#9be8a0", "#ff9a7c", "#a0d8ff", "#e6b0ff"];
+
       function drawOneBall(b) {
         if (!b || b.dead) return;
+        const multi = ballList.length > 1;
+        const tint = multi ? BALL_TINTS[Math.max(0, ballList.indexOf(b)) % BALL_TINTS.length] : "#dceee7";
+
+        // soft contact shadow on the playfield
         ctx.save();
+        ctx.globalAlpha = 0.26;
+        ctx.fillStyle = "#000";
+        ctx.beginPath();
+        ctx.ellipse(b.x + 3, b.y + 6, b.r * 0.95, b.r * 0.58, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+
+        ctx.save();
+        // comet trail, tinted per ball during multiball
         b.trail.forEach((point, i) => {
-          ctx.globalAlpha = (i / b.trail.length) * .1;
-          ctx.fillStyle = "#dceee7";
+          ctx.globalAlpha = (i / b.trail.length) * (multi ? .18 : .1);
+          ctx.fillStyle = tint;
           ctx.beginPath();
           ctx.arc(point.x, point.y, b.r * (i / b.trail.length), 0, Math.PI * 2);
           ctx.fill();
         });
         ctx.globalAlpha = 1;
-        ctx.shadowColor = "#d6f8ff";
+        ctx.shadowColor = multi ? tint : "#d6f8ff";
         ctx.shadowBlur = 10;
         const metal = ctx.createRadialGradient(b.x - 4, b.y - 5, 1, b.x, b.y, b.r);
         metal.addColorStop(0, "#ffffff");
@@ -2787,6 +2869,13 @@
         ctx.fillStyle = metal;
         ctx.beginPath();
         ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+        ctx.fill();
+        // specular highlight
+        ctx.shadowBlur = 0;
+        ctx.globalAlpha = 0.75;
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.arc(b.x - 4, b.y - 5, 2.3, 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
       }
@@ -3140,6 +3229,7 @@
         drawGI(time);
         drawTracks();
         drawTopper();
+        drawDMD(time);
         drawHuntTargets();
         bumpers.forEach((bumper, index) => drawBumper(bumper, index, time));
         drawPinballHardware();
