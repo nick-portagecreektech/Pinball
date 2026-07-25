@@ -867,6 +867,8 @@
       let best = Number(localStorage.getItem("buck-fever-best") || 0);
       let balls = 3;
       let ball = null;
+      let ballList = [];
+      let bonusPending = false;
       let hunt = new Set();
       let flashes = [];
       let particles = [];
@@ -1019,6 +1021,7 @@
         bumperHits = 0;
         bonusMultiplier = 1;
         bonusSeq = null;
+        ballList = [];
         skillShotArmed = false;
         holdBonus = false;
         extraBallAwarded = false;
@@ -1056,21 +1059,29 @@
         canvas.focus({ preventScroll: true });
       }
 
-      function spawnBall() {
-        ball = {
+      function makeBall(props) {
+        return {
           x: PLUNGER_X,
           y: PLUNGER_Y,
           vx: 0,
           vy: 0,
           r: BALL_RADIUS,
-          inLane: true,
-          launched: false,
+          inLane: false,
+          launched: true,
           trail: [],
           restTime: 0,
           flipperLock: 0,
           loopA: null,
-          loopAccum: 0
+          loopAccum: 0,
+          held: 0,
+          dead: false,
+          ...props
         };
+      }
+
+      function spawnBall() {
+        ball = makeBall({ inLane: true, launched: false });
+        ballList = [ball];
         skillShotArmed = true;
         // Bonus multiplier resets each ball unless a HOLD BONUS was earned.
         if (holdBonus) holdBonus = false;
@@ -1080,6 +1091,25 @@
         bumperHits = 0;
         tiltMeter = 0;
         tilted = false;
+      }
+
+      // Add an extra ball already in play (for locks / multiball). It launches
+      // up the shooter lane so it enters the playfield on its own.
+      function addBall() {
+        const extra = makeBall({
+          x: PLUNGER_X, y: 720, inLane: false, launched: true,
+          vx: -20, vy: -1120
+        });
+        ballList.push(extra);
+        lanePulse = 1;
+        plungerFlash = 1;
+        return extra;
+      }
+
+      function activeBallCount() {
+        let n = 0;
+        for (const b of ballList) if (!b.dead) n += 1;
+        return n;
       }
 
       function setPlungerState(nextState) {
@@ -1167,11 +1197,11 @@
         }
         hitSound("drain");
         balls -= 1;
-        ball = null;
+        ball.dead = true;
         setPlungerState("inplay");
         shake = 4;
+        bonusPending = true;
         updateHud();
-        beginBonus();
       }
 
       // Between balls, tally the collectibles left lit and count them up before
@@ -1346,7 +1376,7 @@
       }
 
       function doTilt() {
-        if (tilted || !ball) return;
+        if (tilted || ballList.length === 0) return;
         tilted = true;
         magSaveArmed = false;
         ballSaveArmed = false;
@@ -1355,7 +1385,8 @@
         tone(120, 0.5, "sawtooth", 0.05);
         hitSound("drain");
         balls -= 1;
-        ball = null;
+        ballList.forEach(b => { b.dead = true; });
+        bonusPending = false;
         setPlungerState("inplay");
         resetTimer = 1.3;
         updateHud();
@@ -1705,12 +1736,29 @@
         updateFlipper(flippers.left, dt);
         updateFlipper(flippers.right, dt);
 
-        if (!ball) {
+        if (ballList.length === 0) {
+          ball = null;
           if (bonusSeq) updateBonus(dt);
           else finishBallReset(dt);
           return;
         }
 
+        // Simulate every ball in play against the shared hardware.
+        for (let i = 0; i < ballList.length; i++) {
+          ball = ballList[i];
+          if (!ball.dead) stepBall(dt);
+        }
+        if (ballList.some(b => b.dead)) ballList = ballList.filter(b => !b.dead);
+        ball = ballList[0] || null;
+
+        // When the last ball drains, run the end-of-ball bonus once.
+        if (ballList.length === 0 && bonusPending) {
+          bonusPending = false;
+          beginBonus();
+        }
+      }
+
+      function stepBall(dt) {
         if (ball.inLane && !ball.launched) {
           if (charging) {
             charge = Math.min(1, charge + dt * .72);
@@ -1722,6 +1770,8 @@
           ball.vy = 0;
           return;
         }
+
+        if (ball.held > 0) return;
 
         ball.flipperLock = Math.max(0, ball.flipperLock - dt);
         ball.vy += GRAVITY * dt;
@@ -1942,12 +1992,26 @@
           updateHud();
         }
 
-        if (ball.y > 880 || ball.x < -40 || ball.x > W + 40) drainBall();
-
-        if (ball) {
-          ball.trail.push({ x: ball.x, y: ball.y });
-          if (ball.trail.length > 8) ball.trail.shift();
+        if (ball.y > 880 || ball.x < -40 || ball.x > W + 40) {
+          loseBall();
+          return;
         }
+
+        ball.trail.push({ x: ball.x, y: ball.y });
+        if (ball.trail.length > 8) ball.trail.shift();
+      }
+
+      // A ball left the playfield. During multiball just remove it; on the last
+      // ball, hand off to drainBall (which handles the ball save and the loss).
+      function loseBall() {
+        if (activeBallCount() > 1) {
+          ball.dead = true;
+          tone(200, 0.14, "sawtooth", 0.022);
+          shake = Math.max(shake, 3);
+          floaters.push({ x: ball.x, y: Math.min(ball.y, 840) - 20, text: "BALL LOST", life: 1, max: 1 });
+          return;
+        }
+        drainBall();
       }
 
       function updateEffects(dt) {
@@ -2409,26 +2473,30 @@
       }
 
       function drawBall() {
-        if (!ball) return;
+        ballList.forEach(drawOneBall);
+      }
+
+      function drawOneBall(b) {
+        if (!b || b.dead) return;
         ctx.save();
-        ball.trail.forEach((point, i) => {
-          ctx.globalAlpha = (i / ball.trail.length) * .1;
+        b.trail.forEach((point, i) => {
+          ctx.globalAlpha = (i / b.trail.length) * .1;
           ctx.fillStyle = "#dceee7";
           ctx.beginPath();
-          ctx.arc(point.x, point.y, ball.r * (i / ball.trail.length), 0, Math.PI * 2);
+          ctx.arc(point.x, point.y, b.r * (i / b.trail.length), 0, Math.PI * 2);
           ctx.fill();
         });
         ctx.globalAlpha = 1;
         ctx.shadowColor = "#d6f8ff";
         ctx.shadowBlur = 10;
-        const metal = ctx.createRadialGradient(ball.x - 4, ball.y - 5, 1, ball.x, ball.y, ball.r);
+        const metal = ctx.createRadialGradient(b.x - 4, b.y - 5, 1, b.x, b.y, b.r);
         metal.addColorStop(0, "#ffffff");
         metal.addColorStop(.24, "#cfe4e2");
         metal.addColorStop(.68, "#71827f");
         metal.addColorStop(1, "#26312e");
         ctx.fillStyle = metal;
         ctx.beginPath();
-        ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+        ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
       }
