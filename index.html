@@ -857,6 +857,10 @@
 
       const spinner = { x: 424, y: 468, r: 20, angle: 0, spin: 0, cooldown: 0 };
 
+      // Capture saucer left of the BUCK bumper. Holds a ball briefly (heldBall
+      // overrides recoverLowerBall), plays a light show, then kicks it back out.
+      const scoop = { x: 150, y: 470, r: 15, flash: 0, cooldown: 0 };
+
       const flippers = {
         left: { x: 196, y: 756, len: 86, angle: .38, target: .38, omega: 0, side: -1 },
         right: { x: 404, y: 756, len: 86, angle: Math.PI - .38, target: Math.PI - .38, omega: 0, side: 1 }
@@ -1046,6 +1050,8 @@
         spinner.angle = 0;
         spinner.spin = 0;
         spinner.cooldown = 0;
+        scoop.flash = 0;
+        scoop.cooldown = 0;
         dropResetTimer = 0;
         rolloverResetTimer = 0;
         plungerFlash = 0;
@@ -1771,7 +1777,20 @@
           return;
         }
 
-        if (ball.held > 0) return;
+        if (ball.held > 0) {
+          ball.held -= dt;
+          ball.x = scoop.x;
+          ball.y = scoop.y;
+          ball.vx = 0;
+          ball.vy = 0;
+          ball.trail.length = 0;
+          scoop.flash = Math.max(scoop.flash, 0.6);
+          if (ball.held <= 0) {
+            ball.held = 0;
+            ejectFromScoop();
+          }
+          return;
+        }
 
         ball.flipperLock = Math.max(0, ball.flipperLock - dt);
         ball.vy += GRAVITY * dt;
@@ -1824,6 +1843,13 @@
             }
           }
         });
+
+        const scoopDx = ball.x - scoop.x;
+        const scoopDy = ball.y - scoop.y;
+        if (scoop.cooldown <= 0 && scoopDx * scoopDx + scoopDy * scoopDy < scoop.r * scoop.r) {
+          captureScoop();
+          return;
+        }
 
         standups.forEach((standup, index) => {
           if (collideCircle(standup, .68, 0) && !standup.lit) {
@@ -2001,6 +2027,33 @@
         if (ball.trail.length > 8) ball.trail.shift();
       }
 
+      function captureScoop() {
+        ball.held = 1.0;
+        ball.holdX = scoop.x;
+        ball.holdY = scoop.y;
+        ball.x = scoop.x;
+        ball.y = scoop.y;
+        ball.vx = 0;
+        ball.vy = 0;
+        disarmSkillShot();
+        scoop.flash = 1;
+        addScore(2500, scoop.x, scoop.y - 26, "SCOOP +2,500");
+        burst(scoop.x, scoop.y, "#ffd26f", 14);
+        hitSound("bonus");
+        shake = Math.max(shake, 3);
+      }
+
+      function ejectFromScoop() {
+        ball.y = scoop.y - (scoop.r + ball.r + 2);
+        ball.vy = -560;
+        ball.vx = 150;
+        ball.inLane = false;
+        ball.launched = true;
+        scoop.cooldown = 0.5;
+        lanePulse = Math.max(lanePulse, 0.6);
+        hitSound("launch");
+      }
+
       // A ball left the playfield. During multiball just remove it; on the last
       // ball, hand off to drainBall (which handles the ball save and the loss).
       function loseBall() {
@@ -2072,6 +2125,8 @@
 
         orbitCooldown = Math.max(0, orbitCooldown - dt);
         tiltMeter = Math.max(0, tiltMeter - dt * 0.7);
+        scoop.cooldown = Math.max(0, scoop.cooldown - dt);
+        scoop.flash = Math.max(0, scoop.flash - dt * 2);
       }
 
       function roundedRect(context, x, y, width, height, radius) {
@@ -2691,6 +2746,7 @@
         standups.forEach((s, i) => {
           insert(s.x, s.y, 24, "155,232,160", (s.lit ? 0.5 : 0.12) + flashPulse(`u${i}`) * 0.5);
         });
+        insert(scoop.x, scoop.y, 30, "255,210,111", 0.12 + scoop.flash * 0.5);
         bumpers.forEach((b, i) => {
           const rgb = i === 1 ? "85,215,232" : "255,110,45";
           insert(b.x, b.y, b.r + 22, rgb, 0.16 + flashPulse(`b${i}`) * 0.6 + feverBoost * 0.6);
@@ -2779,6 +2835,36 @@
         ctx.restore();
       }
 
+      function drawScoop() {
+        ctx.save();
+        ctx.translate(scoop.x, scoop.y);
+        if (scoop.flash > 0) {
+          ctx.shadowColor = "#ffd26f";
+          ctx.shadowBlur = 6 + scoop.flash * 22;
+        }
+        // dark hole
+        const hole = ctx.createRadialGradient(0, 0, 1, 0, 0, scoop.r);
+        hole.addColorStop(0, "#000");
+        hole.addColorStop(1, "#0c1a16");
+        ctx.fillStyle = hole;
+        ctx.beginPath();
+        ctx.arc(0, 0, scoop.r, 0, Math.PI * 2);
+        ctx.fill();
+        // lit rim
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = `rgba(255,210,111,${(0.5 + scoop.flash * 0.5).toFixed(3)})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(0, 0, scoop.r, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = "#ffd26f";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.font = "900 8px ui-monospace, monospace";
+        ctx.fillText("DEN", 0, scoop.r + 8);
+        ctx.restore();
+      }
+
       function drawStandups() {
         standups.forEach((standup, index) => {
           const flash = flashes.find(f => f.id === `u${index}`);
@@ -2823,6 +2909,7 @@
         bumpers.forEach((bumper, index) => drawBumper(bumper, index, time));
         drawPinballHardware();
         drawStandups();
+        drawScoop();
         drawSlings();
         posts.forEach(post => {
           ctx.fillStyle = "#d3dfd9";
