@@ -846,6 +846,15 @@
         { x: 466, y: 244, r: 8, letter: "P", lit: false }
       ];
 
+      // Standup targets: always-physical little bumper-posts flanking the pop
+      // bumpers. Hitting one lights it; lighting all three pays a bonus and
+      // relights them for another lap.
+      const standups = [
+        { x: 150, y: 360, r: 10, lit: false, letter: "D" },
+        { x: 300, y: 250, r: 10, lit: false, letter: "E" },
+        { x: 405, y: 400, r: 10, lit: false, letter: "R" }
+      ];
+
       const spinner = { x: 424, y: 468, r: 20, angle: 0, spin: 0, cooldown: 0 };
 
       const flippers = {
@@ -892,6 +901,8 @@
       let huntCycles = 0;
       let comboCount = 0;
       let comboTimer = 0;
+      let standupResetTimer = 0;
+      let superPlungeArmed = false;
 
       bestEl.textContent = formatScore(best);
 
@@ -1009,9 +1020,12 @@
         huntCycles = 0;
         comboCount = 0;
         comboTimer = 0;
+        standupResetTimer = 0;
+        superPlungeArmed = false;
         hunt.clear();
         dropTargets.forEach(target => { target.down = false; });
         rollovers.forEach(rollover => { rollover.lit = false; });
+        standups.forEach(standup => { standup.lit = false; });
         slings.forEach(sling => {
           sling.contact = false;
           sling.cooldown = 0;
@@ -1107,6 +1121,7 @@
       }
 
       function disarmSkillShot() {
+        superPlungeArmed = false;
         if (!skillShotArmed) return;
         skillShotArmed = false;
         updateSkillShotUI();
@@ -1317,6 +1332,9 @@
           if (skillShotArmed && charge >= SKILL_BAND[0] && charge <= SKILL_BAND[1]) {
             awardSkillShot("PERFECT PLUNGE", 6000, 300, 720);
           }
+          // A full-power plunge arms the super skill shot: thread both U-P lanes
+          // untouched to collect it.
+          superPlungeArmed = skillShotArmed && charge >= 0.92;
           updateSkillShotUI();
         } else if (ball?.inLane && !ball.launched) {
           setPlungerState("ready");
@@ -1644,6 +1662,24 @@
           }
         });
 
+        standups.forEach((standup, index) => {
+          if (collideCircle(standup, .68, 0) && !standup.lit) {
+            standup.lit = true;
+            disarmSkillShot();
+            addScore(400, standup.x, standup.y - 20, "+400");
+            flashes.push({ id: `u${index}`, x: standup.x, y: standup.y, life: .35, max: .35 });
+            burst(standup.x, standup.y, "#9be8a0", 7);
+            hitSound("target");
+            registerCombo(standup.x, standup.y);
+            navigator.vibrate?.(8);
+            if (standups.every(s => s.lit)) {
+              addScore(3000, 300, 320, "STANDUPS +3,000");
+              standupResetTimer = 1.2;
+              hitSound("fever");
+            }
+          }
+        });
+
         huntTargets.forEach((target, index) => {
           if (collideCircle(target, .5, 70) && !hunt.has(target.letter)) {
             hunt.add(target.letter);
@@ -1707,6 +1743,13 @@
               bonusMultiplier = Math.min(5, bonusMultiplier + 1);
               holdBonus = true;
               announceBonus("HOLD BONUS", 445, 210, "#ffd26f");
+              if (superPlungeArmed) {
+                superPlungeArmed = false;
+                score += 12000;
+                if (score > best) best = score;
+                announceBonus("SUPER SKILL SHOT +12,000", 300, 260, "#ffd26f");
+                updateHud();
+              }
               rolloverResetTimer = 1.2;
             }
           }
@@ -1720,6 +1763,11 @@
           flashes.push({ id: "spinner", x: spinner.x, y: spinner.y, life: .3, max: .3 });
           tone(880, .045, "square", .022);
           registerCombo(spinner.x, spinner.y);
+        }
+
+        // Secret skill shot: reach the top-left orbit untouched off the plunge.
+        if (skillShotArmed && !ball.inLane && ball.x < 135 && ball.y < 185) {
+          awardSkillShot("SECRET SHOT", 12000, ball.x + 20, ball.y + 30);
         }
 
         if (updateShooterLaneState()) return;
@@ -1790,6 +1838,11 @@
         if (rolloverResetTimer > 0) {
           rolloverResetTimer -= dt;
           if (rolloverResetTimer <= 0) rollovers.forEach(rollover => { rollover.lit = false; });
+        }
+
+        if (standupResetTimer > 0) {
+          standupResetTimer -= dt;
+          if (standupResetTimer <= 0) standups.forEach(standup => { standup.lit = false; });
         }
       }
 
@@ -2403,6 +2456,9 @@
         rollovers.forEach((ro, i) => {
           insert(ro.x, ro.y, 28, "85,215,232", (ro.lit ? 0.5 : 0.14) + flashPulse(`r${i}`) * 0.5);
         });
+        standups.forEach((s, i) => {
+          insert(s.x, s.y, 24, "155,232,160", (s.lit ? 0.5 : 0.12) + flashPulse(`u${i}`) * 0.5);
+        });
         bumpers.forEach((b, i) => {
           const rgb = i === 1 ? "85,215,232" : "255,110,45";
           insert(b.x, b.y, b.r + 22, rgb, 0.16 + flashPulse(`b${i}`) * 0.6 + feverBoost * 0.6);
@@ -2458,6 +2514,32 @@
         ctx.restore();
       }
 
+      function drawStandups() {
+        standups.forEach((standup, index) => {
+          const flash = flashes.find(f => f.id === `u${index}`);
+          ctx.save();
+          ctx.translate(standup.x, standup.y);
+          if (standup.lit || flash) {
+            ctx.shadowColor = "#9be8a0";
+            ctx.shadowBlur = flash ? 18 : 10;
+          }
+          ctx.fillStyle = standup.lit ? "#bdf3c1" : "#20302a";
+          ctx.strokeStyle = standup.lit ? "#9be8a0" : "rgba(222,230,216,.5)";
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.arc(0, 0, standup.r, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = standup.lit ? "#0b2018" : "#aebcb4";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.font = "900 11px ui-monospace, monospace";
+          ctx.fillText(standup.letter, 0, 1);
+          ctx.restore();
+        });
+      }
+
       function draw(time) {
         resizeCanvas();
         const sx = canvas.width / W;
@@ -2474,6 +2556,7 @@
         drawHuntTargets();
         bumpers.forEach((bumper, index) => drawBumper(bumper, index, time));
         drawPinballHardware();
+        drawStandups();
         drawSlings();
         posts.forEach(post => {
           ctx.fillStyle = "#d3dfd9";
