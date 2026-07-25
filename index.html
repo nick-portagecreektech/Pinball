@@ -864,9 +864,10 @@
       const flippers = {
         left: { x: 196, y: 756, len: 86, angle: .38, target: .38, omega: 0, side: -1 },
         right: { x: 404, y: 756, len: 86, angle: Math.PI - .38, target: Math.PI - .38, omega: 0, side: 1 },
-        // C2: a small left-hand upper flipper the center ramp delivers to. Fires
-        // on the Left button alongside the lower-left flipper (no new control).
-        upper: { x: 150, y: 220, len: 60, angle: .30, target: .30, omega: 0, side: -1 }
+        // C2: a left-hand upper flipper the center ramp delivers to, set in the
+        // open gap below the HUNT bank so it has real swing room. Fires on the
+        // Left button alongside the lower-left flipper (no new control).
+        upper: { x: 198, y: 228, len: 72, angle: .26, target: .26, omega: 0, side: -1 }
       };
 
       // C2: center ramp — a diverter mouth in the right-center channel that lifts
@@ -875,7 +876,7 @@
         gx0: 355, gx1: 400, gy0: 470, gy1: 540, gVy: -210,
         p0: { x: 377, y: 505 },
         p1: { x: 405, y: 150 },
-        p2: { x: 185, y: 178 },
+        p2: { x: 222, y: 166 },
         duration: 0.8,
         flash: 0
       };
@@ -1104,7 +1105,7 @@
         scoop.flash = 0;
         scoop.cooldown = 0;
         RAMP.flash = 0;
-        flippers.upper.angle = flippers.upper.target = .30;
+        flippers.upper.angle = flippers.upper.target = .26;
         flippers.upper.omega = 0;
         dropResetTimer = 0;
         rolloverResetTimer = 0;
@@ -1612,7 +1613,7 @@
         if (side === "left") {
           flipper.target = down ? -.5 : .38;
           // the upper flipper fires with the lower-left flipper
-          flippers.upper.target = down ? -.55 : .30;
+          flippers.upper.target = down ? -.62 : .26;
         } else {
           flipper.target = down ? Math.PI + .5 : Math.PI - .38;
         }
@@ -2687,14 +2688,76 @@
         ctx.stroke();
         ctx.restore();
 
-        ctx.fillStyle = "#f0dfb9";
+        // icon in place of the bumper name
+        drawBumperIcon(index);
+        ctx.fillStyle = index === 1 ? "#55d7e8" : "#ff7a32";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.font = `900 ${index === 2 ? 15 : 13}px Arial Narrow, sans-serif`;
-        ctx.fillText(bumper.name, 0, -2);
-        ctx.fillStyle = index === 1 ? "#55d7e8" : "#ff7a32";
         ctx.font = "900 9px ui-monospace, monospace";
-        ctx.fillText("750", 0, 13);
+        ctx.fillText("750", 0, bumper.r - 9);
+        ctx.restore();
+      }
+
+      // Little emblem drawn at the bumper origin: CAMP = cabin, PINE = pine,
+      // BUCK = buck head. Replaces the printed bumper name.
+      function drawBumperIcon(index) {
+        ctx.save();
+        ctx.translate(0, -3);
+        ctx.lineJoin = "round";
+        ctx.lineCap = "round";
+        if (index === 0) {
+          // CAMP — a little cabin
+          ctx.fillStyle = "#f6e8c2";
+          ctx.strokeStyle = "#f6e8c2";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(-12, -1);
+          ctx.lineTo(0, -11);
+          ctx.lineTo(12, -1);
+          ctx.closePath();
+          ctx.fill();
+          ctx.strokeRect(-9, -1, 18, 11);
+          ctx.fillStyle = "#0a1512";
+          ctx.fillRect(-2.5, 3, 5, 7);
+        } else if (index === 1) {
+          // PINE — a stacked pine tree
+          ctx.fillStyle = "#b98a4a";
+          ctx.fillRect(-2, 7, 4, 5);
+          ctx.fillStyle = "#bfe8c8";
+          [[8, 8], [7, 1], [5, -5]].forEach(([w, y], i) => {
+            const top = y - 8;
+            ctx.beginPath();
+            ctx.moveTo(-w, y);
+            ctx.lineTo(0, top);
+            ctx.lineTo(w, y);
+            ctx.closePath();
+            ctx.fill();
+          });
+        } else {
+          // BUCK — a buck head with antlers
+          ctx.strokeStyle = "#f6e8c2";
+          ctx.fillStyle = "#f6e8c2";
+          ctx.lineWidth = 1.7;
+          ctx.beginPath();
+          ctx.moveTo(-4, -6); ctx.lineTo(-9, -13);
+          ctx.moveTo(-9, -13); ctx.lineTo(-13, -12);
+          ctx.moveTo(-9, -13); ctx.lineTo(-10, -18);
+          ctx.moveTo(4, -6); ctx.lineTo(9, -13);
+          ctx.moveTo(9, -13); ctx.lineTo(13, -12);
+          ctx.moveTo(9, -13); ctx.lineTo(10, -18);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(0, -8);
+          ctx.quadraticCurveTo(-8, -7, -6, 4);
+          ctx.quadraticCurveTo(-4, 11, 0, 12);
+          ctx.quadraticCurveTo(4, 11, 6, 4);
+          ctx.quadraticCurveTo(8, -7, 0, -8);
+          ctx.fill();
+          ctx.fillStyle = "#1b120e";
+          ctx.beginPath(); ctx.arc(-2.6, -1, 1.1, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(2.6, -1, 1.1, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(0, 7, 1.6, 0, Math.PI * 2); ctx.fill();
+        }
         ctx.restore();
       }
 
