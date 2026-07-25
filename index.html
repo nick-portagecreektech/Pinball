@@ -932,6 +932,7 @@
       let modeProgress = 0;
       let modeIndex = 0;
       const modesDone = new Set();
+      let wizard = false;
 
       bestEl.textContent = formatScore(best);
 
@@ -964,7 +965,7 @@
         const bonuses = [];
         if (modeActive) bonuses.push(`${modeActive.name} ${modeProgress}/${modeActive.goal} ${Math.ceil(modeTimer)}s`);
         if (multiball) {
-          bonuses.push("MULTIBALL");
+          bonuses.push(wizard ? "OPENING DAY" : "MULTIBALL");
           if (superJackpotReady) bonuses.push("SUPER JP");
           else if (jackpotLit) bonuses.push("JACKPOT");
         } else if (lockCount > 0) bonuses.push("BALL LOCKED");
@@ -1074,6 +1075,7 @@
         modeProgress = 0;
         modeIndex = 0;
         modesDone.clear();
+        wizard = false;
         hunt.clear();
         dropTargets.forEach(target => { target.down = false; });
         rollovers.forEach(rollover => { rollover.lit = false; });
@@ -1127,6 +1129,7 @@
         ball = makeBall({ inLane: true, launched: false });
         ballList = [ball];
         multiball = false;
+        wizard = false;
         lockCount = 0;
         lockedBall = null;
         skillShotArmed = true;
@@ -1389,11 +1392,36 @@
         updateHud();
       }
 
+      // Wizard mode: all three missions complete → OPENING DAY, a 6-ball
+      // multiball with every shot doubled for the duration.
       function startWizard() {
-        // Fleshed out into the full 6-ball wizard mode in a later commit.
-        addScore(50000, 300, 320, "OPENING DAY!");
-        announceBonus("OPENING DAY!", 300, 300, "#ff7a32");
+        wizard = true;
+        multiball = true;
+        lockCount = 0;
+        lockedBall = null;
+        jackpot = 30000;
+        jackpotLit = true;
+        jackpotsCollected = 0;
+        superJackpotReady = false;
         modesDone.clear();
+        modeActive = null;
+        modeTimer = 0;
+        announceBonus("OPENING DAY!", 300, 280, "#ff7a32");
+        feverFlash = 1;
+        shake = 12;
+        hitSound("fever");
+        activateMultiplier(2, 40, "OPENING DAY 2X • 40s", 300, 330);
+        const need = Math.max(0, 6 - activeBallCount());
+        for (let i = 0; i < need; i++) {
+          const b = addBall();
+          b.x = 200 + i * 45;
+          b.y = 300 + (i % 2) * 44;
+          b.vx = (i % 2 ? 1 : -1) * (70 + i * 22);
+          b.vy = -200 - i * 26;
+          b.held = 0;
+          b.locked = false;
+        }
+        updateHud();
       }
 
       function modeEvent(type) {
@@ -2243,6 +2271,7 @@
           floaters.push({ x: ball.x, y: Math.min(ball.y, 840) - 20, text: "BALL LOST", life: 1, max: 1 });
           if (activeBallCount() <= 1) {
             multiball = false;
+            wizard = false;
             // If the only survivor is a locked ball, release it so play continues.
             const last = ballList.find(b => !b.dead);
             if (last && last.locked) {
