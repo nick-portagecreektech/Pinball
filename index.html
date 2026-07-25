@@ -862,6 +862,9 @@
       let ballSaveArmed = false;
       let dropResetTimer = 0;
       let rolloverResetTimer = 0;
+      let bumperHits = 0;
+      let bonusMultiplier = 1;
+      let bonusSeq = null;
 
       bestEl.textContent = formatScore(best);
 
@@ -876,6 +879,7 @@
         huntEls.forEach(el => el.classList.toggle("lit", hunt.has(el.dataset.letter)));
         const bonuses = [];
         if (multiplierTimer > 0) bonuses.push(`${scoreMultiplier}X ${Math.ceil(multiplierTimer)}s`);
+        if (bonusMultiplier > 1) bonuses.push(`B×${bonusMultiplier}`);
         if (ballSaveArmed) bonuses.push("SAVE");
         bonusStatus.textContent = bonuses.join(" • ") || "Bonus";
         bonusStatus.classList.toggle("active", bonuses.length > 0);
@@ -950,6 +954,9 @@
         scoreMultiplier = 1;
         multiplierTimer = 0;
         ballSaveArmed = false;
+        bumperHits = 0;
+        bonusMultiplier = 1;
+        bonusSeq = null;
         hunt.clear();
         dropTargets.forEach(target => { target.down = false; });
         rollovers.forEach(rollover => { rollover.lit = false; });
@@ -987,6 +994,7 @@
         };
         settleBallOnPlunger(false);
         resetTimer = 0;
+        bumperHits = 0;
       }
 
       function setPlungerState(nextState) {
@@ -1047,9 +1055,62 @@
         balls -= 1;
         ball = null;
         setPlungerState("inplay");
-        resetTimer = 1.2;
         shake = 4;
         updateHud();
+        beginBonus();
+      }
+
+      // Between balls, tally the collectibles left lit and count them up before
+      // the next ball spawns. If nothing is lit, skip the ceremony and fall back
+      // to the plain 1.2s reset pause.
+      function beginBonus() {
+        const items = [];
+        if (hunt.size) items.push({ label: "HUNT LETTERS", count: hunt.size, per: 1000 });
+        const drops = dropTargets.filter(t => t.down).length;
+        if (drops) items.push({ label: "CAMP DROPS", count: drops, per: 800 });
+        const lanes = rollovers.filter(r => r.lit).length;
+        if (lanes) items.push({ label: "U-P LANES", count: lanes, per: 600 });
+        if (bumperHits) items.push({ label: "BUMPER HITS", count: bumperHits, per: 120 });
+        items.forEach(it => { it.subtotal = it.count * it.per; });
+        const base = items.reduce((sum, it) => sum + it.subtotal, 0);
+        if (base <= 0) { resetTimer = 1.2; return; }
+        bonusSeq = {
+          items, base, mult: bonusMultiplier, total: base * bonusMultiplier,
+          idx: 0, lineTimer: 0, multT: 0, paidExtra: 0, hold: 0, phase: "lines"
+        };
+        hitSound("bonus");
+      }
+
+      function updateBonus(dt) {
+        const seq = bonusSeq;
+        if (seq.phase === "lines") {
+          seq.lineTimer += dt;
+          while (seq.idx < seq.items.length && seq.lineTimer >= 0.34) {
+            seq.lineTimer -= 0.34;
+            score += seq.items[seq.idx].subtotal;
+            if (score > best) best = score;
+            seq.idx += 1;
+            tone(520 + seq.idx * 90, 0.06, "triangle", 0.03);
+            updateHud();
+          }
+          if (seq.idx >= seq.items.length) seq.phase = seq.mult > 1 ? "mult" : "hold";
+        } else if (seq.phase === "mult") {
+          seq.multT += dt;
+          const p = Math.min(1, seq.multT / 0.5);
+          const target = Math.round(seq.base * (seq.mult - 1) * p);
+          score += target - seq.paidExtra;
+          seq.paidExtra = target;
+          if (score > best) best = score;
+          updateHud();
+          if (p >= 1) { seq.phase = "hold"; hitSound("bonus"); shake = Math.max(shake, 3); }
+        } else {
+          seq.hold += dt;
+          if (seq.hold >= 0.85) {
+            bonusSeq = null;
+            if (balls > 0) spawnBall();
+            else endGame();
+          }
+        }
       }
 
       function finishBallReset(dt) {
@@ -1409,7 +1470,8 @@
         updateFlipper(flippers.right, dt);
 
         if (!ball) {
-          finishBallReset(dt);
+          if (bonusSeq) updateBonus(dt);
+          else finishBallReset(dt);
           return;
         }
 
@@ -1464,6 +1526,7 @@
           if (collideCircle(bumper, .72, 280)) {
             if (!flashes.some(f => f.id === `b${index}` && f.life > .12)) {
               flashes.push({ id: `b${index}`, x: bumper.x, y: bumper.y, life: .34, max: .34 });
+              bumperHits += 1;
               addScore(750, bumper.x, bumper.y - bumper.r, "+750");
               burst(bumper.x, bumper.y, index === 1 ? "#55d7e8" : "#ff7a32", 12);
               hitSound("bumper");
@@ -1523,6 +1586,7 @@
             if (rollovers.every(item => item.lit)) {
               addScore(3000, 445, 190, "U.P. +3,000");
               activateMultiplier(2, 12, "YOOPER 2X • 12s", 445, 170);
+              bonusMultiplier = Math.min(5, bonusMultiplier + 1);
               rolloverResetTimer = 1.2;
             }
           }
@@ -2165,6 +2229,53 @@
         ctx.restore();
       }
 
+      function drawBonus() {
+        if (!bonusSeq) return;
+        const seq = bonusSeq;
+        ctx.save();
+        ctx.fillStyle = "rgba(2,7,6,.84)";
+        ctx.fillRect(0, 0, W, H);
+
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#ff7a32";
+        ctx.font = "900 15px Arial Narrow, sans-serif";
+        ctx.fillText("END OF BALL", 300, 296);
+        ctx.fillStyle = "#f6e8c2";
+        ctx.font = "900 46px Impact, Arial Narrow, sans-serif";
+        ctx.fillText("BONUS", 300, 342);
+
+        ctx.font = "800 15px ui-monospace, monospace";
+        let y = 400;
+        seq.items.forEach((it, i) => {
+          const revealed = i < seq.idx;
+          ctx.globalAlpha = revealed ? 1 : 0.26;
+          ctx.textAlign = "left";
+          ctx.fillStyle = "#cdd8cf";
+          ctx.fillText(`${it.label}   ${it.count} × ${it.per.toLocaleString()}`, 128, y);
+          ctx.textAlign = "right";
+          ctx.fillStyle = "#ffd9a0";
+          ctx.fillText(revealed ? it.subtotal.toLocaleString() : "—", 472, y);
+          y += 30;
+        });
+        ctx.globalAlpha = 1;
+
+        if (seq.mult > 1) {
+          ctx.textAlign = "center";
+          ctx.fillStyle = seq.phase === "lines" ? "rgba(85,215,232,.4)" : "#55d7e8";
+          ctx.font = "900 20px Impact, Arial Narrow, sans-serif";
+          ctx.fillText(`BONUS ×${seq.mult}`, 300, y + 18);
+        }
+
+        const running = seq.phase === "lines"
+          ? seq.items.slice(0, seq.idx).reduce((s, it) => s + it.subtotal, 0)
+          : seq.base + seq.paidExtra;
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#ffb34f";
+        ctx.font = "900 42px ui-monospace, monospace";
+        ctx.fillText(running.toLocaleString(), 300, y + 74);
+        ctx.restore();
+      }
+
       function draw(time) {
         resizeCanvas();
         const sx = canvas.width / W;
@@ -2196,6 +2307,8 @@
         drawBall();
         drawEffects();
         ctx.restore();
+
+        drawBonus();
 
         if (paused && state === "playing") {
           ctx.fillStyle = "rgba(2,7,6,.72)";
