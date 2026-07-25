@@ -903,6 +903,7 @@
       let comboTimer = 0;
       let standupResetTimer = 0;
       let superPlungeArmed = false;
+      let orbitCooldown = 0;
 
       bestEl.textContent = formatScore(best);
 
@@ -1056,7 +1057,9 @@
           launched: false,
           trail: [],
           restTime: 0,
-          flipperLock: 0
+          flipperLock: 0,
+          loopA: null,
+          loopAccum: 0
         };
         skillShotArmed = true;
         // Bonus multiplier resets each ball unless a HOLD BONUS was earned.
@@ -1770,6 +1773,36 @@
           awardSkillShot("SECRET SHOT", 12000, ball.x + 20, ball.y + 30);
         }
 
+        // Orbit made: a fast pass across the top lane (the left-orbit return).
+        if (orbitCooldown <= 0 && !ball.inLane && ball.y < 118 && Math.abs(ball.vx) > 170) {
+          orbitCooldown = 1.1;
+          addScore(2000, 300, 108, "ORBIT +2,000");
+          registerCombo(300, 118);
+          lanePulse = Math.max(lanePulse, 0.8);
+        }
+
+        // Spiral shot: a full loop around the BUCK bumper (angle accumulator).
+        const loopDx = ball.x - 276;
+        const loopDy = ball.y - 452;
+        if (!ball.inLane && loopDx * loopDx + loopDy * loopDy < 115 * 115) {
+          const a = Math.atan2(loopDy, loopDx);
+          if (ball.loopA !== null) {
+            let d = a - ball.loopA;
+            if (d > Math.PI) d -= Math.PI * 2;
+            if (d < -Math.PI) d += Math.PI * 2;
+            ball.loopAccum += d;
+          }
+          ball.loopA = a;
+          if (Math.abs(ball.loopAccum) > Math.PI * 1.85) {
+            ball.loopAccum = 0;
+            addScore(3000, 276, 452, "BUCK LOOP +3,000");
+            registerCombo(276, 452);
+          }
+        } else {
+          ball.loopA = null;
+          ball.loopAccum = 0;
+        }
+
         if (updateShooterLaneState()) return;
 
         collideFlipper(flippers.left);
@@ -1844,6 +1877,8 @@
           standupResetTimer -= dt;
           if (standupResetTimer <= 0) standups.forEach(standup => { standup.lit = false; });
         }
+
+        orbitCooldown = Math.max(0, orbitCooldown - dt);
       }
 
       function roundedRect(context, x, y, width, height, radius) {
@@ -2514,6 +2549,39 @@
         ctx.restore();
       }
 
+      // Painted guide lanes: a top orbit, a left return habitrail, and a spiral
+      // around the BUCK bumper. Cosmetic lanes that read the shots the orbit /
+      // loop detectors reward — drawn under the hardware like the shooter lane.
+      function drawTracks() {
+        ctx.save();
+        ctx.lineCap = "round";
+        ctx.setLineDash([4, 9]);
+        const glow = 0.16 + lanePulse * 0.4;
+
+        // Top orbit lane, hugging the inside of the upper wall.
+        ctx.strokeStyle = `rgba(85,215,232,${glow.toFixed(3)})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(120, 96);
+        ctx.quadraticCurveTo(300, 74, 470, 92);
+        ctx.stroke();
+
+        // Left return habitrail from the top-left orbit down to the left inlane.
+        ctx.strokeStyle = `rgba(216,170,84,${(0.12 + lanePulse * 0.3).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.moveTo(96, 120);
+        ctx.quadraticCurveTo(70, 430, 120, 700);
+        ctx.stroke();
+
+        // Spiral lane around the BUCK bumper.
+        ctx.strokeStyle = "rgba(255,122,50,.13)";
+        ctx.beginPath();
+        ctx.arc(276, 452, 74, -Math.PI * 0.85, Math.PI * 0.55);
+        ctx.stroke();
+
+        ctx.restore();
+      }
+
       function drawStandups() {
         standups.forEach((standup, index) => {
           const flash = flashes.find(f => f.id === `u${index}`);
@@ -2552,6 +2620,7 @@
         ctx.translate(shakeX, shakeY);
         drawBackground();
         drawGI(time);
+        drawTracks();
         drawTopper();
         drawHuntTargets();
         bumpers.forEach((bumper, index) => drawBumper(bumper, index, time));
