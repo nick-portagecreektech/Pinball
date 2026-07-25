@@ -885,6 +885,11 @@
       let bonusSeq = null;
       let skillShotArmed = false;
       const SKILL_BAND = [0.60, 0.78];
+      let holdBonus = false;
+      let extraBallAwarded = false;
+      let replayAwarded = false;
+      let replayTarget = 0;
+      let huntCycles = 0;
 
       bestEl.textContent = formatScore(best);
 
@@ -892,14 +897,31 @@
         return Math.max(0, Math.floor(value)).toString().padStart(7, "0");
       }
 
+      // First score to cross 100k earns an extra ball; first score to beat the
+      // best-at-game-start earns a replay ball. Each fires once per game.
+      function checkScoreAwards() {
+        if (state !== "playing") return;
+        if (!extraBallAwarded && score >= 100000) {
+          extraBallAwarded = true;
+          balls += 1;
+          announceBonus("EXTRA BALL", 300, 300, "#ffd26f");
+        }
+        if (!replayAwarded && replayTarget > 0 && score >= replayTarget) {
+          replayAwarded = true;
+          balls += 1;
+          announceBonus("REPLAY", 300, 344, "#55d7e8");
+        }
+      }
+
       function updateHud() {
+        checkScoreAwards();
         scoreEl.textContent = formatScore(score);
         ballsEl.textContent = balls;
         bestEl.textContent = formatScore(best);
         huntEls.forEach(el => el.classList.toggle("lit", hunt.has(el.dataset.letter)));
         const bonuses = [];
         if (multiplierTimer > 0) bonuses.push(`${scoreMultiplier}X ${Math.ceil(multiplierTimer)}s`);
-        if (bonusMultiplier > 1) bonuses.push(`B×${bonusMultiplier}`);
+        if (bonusMultiplier > 1) bonuses.push(`B×${bonusMultiplier}${holdBonus ? " HOLD" : ""}`);
         if (ballSaveArmed) bonuses.push("SAVE");
         bonusStatus.textContent = bonuses.join(" • ") || "Bonus";
         bonusStatus.classList.toggle("active", bonuses.length > 0);
@@ -978,6 +1000,11 @@
         bonusMultiplier = 1;
         bonusSeq = null;
         skillShotArmed = false;
+        holdBonus = false;
+        extraBallAwarded = false;
+        replayAwarded = false;
+        replayTarget = best;
+        huntCycles = 0;
         hunt.clear();
         dropTargets.forEach(target => { target.down = false; });
         rollovers.forEach(rollover => { rollover.lit = false; });
@@ -1014,6 +1041,9 @@
           flipperLock: 0
         };
         skillShotArmed = true;
+        // Bonus multiplier resets each ball unless a HOLD BONUS was earned.
+        if (holdBonus) holdBonus = false;
+        else bonusMultiplier = 1;
         settleBallOnPlunger(false);
         resetTimer = 0;
         bumperHits = 0;
@@ -1603,8 +1633,12 @@
             burst(target.x, target.y, "#ffe7a6", 14);
             hitSound("target");
             if (hunt.size === 4) {
-              addScore(25000, 300, 370, "BUCK FEVER +25,000");
-              activateMultiplier(3, 10, "BUCK FEVER 3X • 10s", 300, 330);
+              huntCycles += 1;
+              const mult = [3, 5, 6][Math.min(huntCycles - 1, 2)];
+              const feverName = huntCycles >= 2 ? "SUPER HUNT" : "BUCK FEVER";
+              const feverPts = 25000 + (huntCycles - 1) * 10000;
+              addScore(feverPts, 300, 370, `${feverName} +${feverPts.toLocaleString()}`);
+              activateMultiplier(mult, 10, `${feverName} ${mult}X • 10s`, 300, 330);
               feverFlash = 1;
               shake = 9;
               hitSound("fever");
@@ -1648,6 +1682,8 @@
               addScore(3000, 445, 190, "U.P. +3,000");
               activateMultiplier(2, 12, "YOOPER 2X • 12s", 445, 170);
               bonusMultiplier = Math.min(5, bonusMultiplier + 1);
+              holdBonus = true;
+              announceBonus("HOLD BONUS", 445, 210, "#ffd26f");
               rolloverResetTimer = 1.2;
             }
           }
