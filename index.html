@@ -310,6 +310,67 @@
       line-height: 1.45;
     }
 
+    .hiscores {
+      width: min(100%, 244px);
+      margin: 0 auto 16px;
+      font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+      text-align: left;
+    }
+
+    .hiscores-title {
+      margin-bottom: 8px;
+      color: var(--orange);
+      font-size: .58rem;
+      font-weight: 900;
+      letter-spacing: .22em;
+      text-transform: uppercase;
+      text-align: center;
+    }
+
+    .hiscore-row {
+      display: grid;
+      grid-template-columns: 1.6em 3em 1fr;
+      gap: 9px;
+      padding: 1px 0;
+      font-size: .76rem;
+      color: #cdd8cf;
+    }
+
+    .hiscore-row .rank { color: var(--muted); text-align: right; }
+    .hiscore-row .name { color: var(--brass); font-weight: 900; letter-spacing: .1em; }
+    .hiscore-row .val { color: #ffd9a0; text-align: right; font-variant-numeric: tabular-nums; }
+
+    .hiscore-row.you {
+      background: rgba(255, 90, 31, .12);
+      border-radius: 4px;
+    }
+
+    .hiscore-row.you .rank,
+    .hiscore-row.you .name,
+    .hiscore-row.you .val {
+      color: #fff7e7;
+      text-shadow: 0 0 10px rgba(255, 90, 31, .7);
+    }
+
+    .hiscores-empty {
+      color: var(--muted);
+      font-size: .72rem;
+      text-align: center;
+    }
+
+    .hiscore-submit {
+      display: block;
+      margin-top: 10px;
+      color: var(--lake);
+      font-size: .68rem;
+      font-weight: 900;
+      letter-spacing: .05em;
+      text-align: center;
+      text-decoration: none;
+    }
+
+    .hiscore-submit:hover { text-decoration: underline; }
+
     .start-button {
       min-width: 182px;
       min-height: 52px;
@@ -704,6 +765,7 @@
             <p class="overlay-kicker" id="overlayKicker">Opening Day • 5:42 AM</p>
             <h2 class="overlay-title" id="overlayTitle">Buck<br>Fever</h2>
             <p class="overlay-copy" id="overlayCopy">Light H-U-N-T, wake the camp, and keep the silver ball out of Lake Superior.</p>
+            <div class="hiscores" id="hiscores" aria-label="High scores"></div>
             <button class="start-button" id="startButton" type="button">Start the Hunt</button>
           </div>
         </div>
@@ -796,6 +858,7 @@
       const rightButton = document.getElementById("rightButton");
       const launchButton = document.getElementById("launchButton");
       const huntEls = [...document.querySelectorAll(".hunt-letter")];
+      const hiscoresEl = document.getElementById("hiscores");
 
       const walls = [
         [56, 132, 58, 612], [58, 612, 88, 682], [88, 682, 150, 748],
@@ -885,6 +948,21 @@
       let score = 0;
       let best = Number(localStorage.getItem("buck-fever-best") || 0);
       let balls = 3;
+
+      // High scores: a shared, read-only board fetched from scores.json in the
+      // repo (everyone sees the same list), with a local cache as offline
+      // fallback and an arcade-style initials entry for qualifying scores.
+      const SCORES_URL = "scores.json";
+      const SCORES_KEY = "buck-fever-scores";
+      const MAX_SCORES = 10;
+      const INITIAL_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+      const REPO_ISSUES = "https://github.com/nick-portagecreektech/Pinball/issues/new";
+      let sharedScores = [];
+      let localScores = loadLocalScores();
+      let initials = [0, 0, 0];
+      let initialSlot = 0;
+      let pendingScore = 0;
+      let pendingEntry = null;
       let ball = null;
       let ballList = [];
       let bonusPending = false;
@@ -953,6 +1031,100 @@
 
       function formatScore(value) {
         return Math.max(0, Math.floor(value)).toString().padStart(7, "0");
+      }
+
+      function sanitizeScores(raw) {
+        if (!Array.isArray(raw)) return [];
+        return raw
+          .filter(s => s && typeof s.name === "string" && typeof s.score === "number" && isFinite(s.score))
+          .map(s => ({
+            name: (s.name.toUpperCase().replace(/[^A-Z]/g, "") + "AAA").slice(0, 3),
+            score: Math.max(0, Math.floor(s.score))
+          }))
+          .sort((a, b) => b.score - a.score)
+          .slice(0, MAX_SCORES);
+      }
+
+      function loadLocalScores() {
+        try {
+          return sanitizeScores(JSON.parse(localStorage.getItem(SCORES_KEY) || "[]"));
+        } catch {
+          return [];
+        }
+      }
+
+      function saveLocalScores() {
+        try {
+          localStorage.setItem(SCORES_KEY, JSON.stringify(localScores));
+        } catch { /* storage full / disabled — non-fatal */ }
+      }
+
+      // The shared board drives the display; the local cache is the offline
+      // fallback so the list is never empty.
+      function boardScores() {
+        return sharedScores.length ? sharedScores : localScores;
+      }
+
+      async function fetchSharedScores() {
+        try {
+          const res = await fetch(SCORES_URL, { cache: "no-store" });
+          if (!res.ok) return;
+          sharedScores = sanitizeScores(await res.json());
+          if (state === "intro" || state === "gameover") renderLeaderboard(pendingEntry);
+        } catch { /* offline or file:// — fall back to local cache */ }
+      }
+
+      function qualifies(value) {
+        const board = boardScores();
+        return value > 0 && (board.length < MAX_SCORES || value > board[board.length - 1].score);
+      }
+
+      function rankFor(value) {
+        return boardScores().filter(s => s.score > value).length + 1;
+      }
+
+      // Build a display list (shared board + the player's just-earned entry
+      // inserted where it lands, highlighted) and a submission link.
+      function renderLeaderboard(pending) {
+        const base = boardScores();
+        let rows;
+        let youIndex = -1;
+        if (pending) {
+          const existing = base.findIndex(s => s.name === pending.name && s.score === pending.score);
+          if (existing >= 0) {
+            // already in the board (offline cache) — just highlight it
+            youIndex = existing;
+            rows = base.map((s, i) => ({ ...s, you: i === existing }));
+          } else {
+            youIndex = base.filter(s => s.score > pending.score).length;
+            rows = base.map(s => ({ ...s, you: false }));
+            rows.splice(youIndex, 0, { name: pending.name, score: pending.score, you: true });
+          }
+        } else {
+          rows = base.map(s => ({ ...s, you: false }));
+        }
+        const list = rows.slice(0, MAX_SCORES);
+
+        let html = `<div class="hiscores-title">Camp Leaderboard</div>`;
+        if (!list.length) {
+          html += `<div class="hiscores-empty">No scores yet — be the first.</div>`;
+        } else {
+          html += list.map((s, i) =>
+            `<div class="hiscore-row${s.you ? " you" : ""}">` +
+              `<span class="rank">${i + 1}</span>` +
+              `<span class="name">${s.name}</span>` +
+              `<span class="val">${s.score.toLocaleString()}</span>` +
+            `</div>`
+          ).join("");
+        }
+        if (pending && youIndex < MAX_SCORES) {
+          const title = encodeURIComponent(`Score: ${pending.name} ${pending.score.toLocaleString()}`);
+          const body = encodeURIComponent(
+            `Add to scores.json:\n\n{ "name": "${pending.name}", "score": ${pending.score} }`
+          );
+          html += `<a class="hiscore-submit" href="${REPO_ISSUES}?title=${title}&body=${body}" target="_blank" rel="noopener">Post ${pending.name} to the camp board →</a>`;
+        }
+        hiscoresEl.innerHTML = html;
       }
 
       // First score to cross 100k earns an extra ball; first score to beat the
@@ -1058,6 +1230,8 @@
         paused = false;
         score = 0;
         balls = 3;
+        pendingScore = 0;
+        pendingEntry = null;
         scoreMultiplier = 1;
         multiplierTimer = 0;
         ballSaveArmed = false;
@@ -1339,19 +1513,76 @@
       }
 
       function endGame() {
-        state = "gameover";
         if (score > best) {
           best = score;
           localStorage.setItem("buck-fever-best", String(best));
-          overlayKicker.textContent = "New Camp Record";
-        } else {
-          overlayKicker.textContent = "The Woods Go Quiet";
         }
+        pendingScore = score;
+        pendingEntry = null;
+        // A qualifying score drops into the arcade initials-entry screen first.
+        if (qualifies(score)) {
+          state = "initials";
+          initials = [0, 0, 0];
+          initialSlot = 0;
+          overlay.classList.remove("visible");
+          ensureAudio();
+          tone(660, 0.12, "triangle", 0.045);
+          tone(880, 0.12, "triangle", 0.04, 0.1);
+          updateHud();
+          return;
+        }
+        showGameOver();
+      }
+
+      function showGameOver() {
+        state = "gameover";
+        const madeBoard = pendingEntry && rankFor(pendingEntry.score) <= MAX_SCORES;
+        overlayKicker.textContent = madeBoard
+          ? (rankFor(pendingEntry.score) === 1 ? "New Camp Record" : "On the Board")
+          : "The Woods Go Quiet";
         overlayTitle.innerHTML = "Hunt<br>Over";
-        overlayCopy.textContent = `Final score ${score.toLocaleString()}. The campfire is still warm.`;
+        overlayCopy.textContent = `Final score ${pendingScore.toLocaleString()}. The campfire is still warm.`;
         startButton.textContent = "Hunt Again";
+        renderLeaderboard(pendingEntry);
         overlay.classList.add("visible");
         updateHud();
+      }
+
+      function initialsNav(dir) {
+        if (state !== "initials") return;
+        initials[initialSlot] = (initials[initialSlot] + dir + 26) % 26;
+        tone(420 + initials[initialSlot] * 9, 0.03, "square", 0.03);
+      }
+
+      function initialsType(letterIndex) {
+        if (state !== "initials") return;
+        initials[initialSlot] = letterIndex;
+        tone(660, 0.03, "square", 0.03);
+        if (initialSlot < 2) initialSlot += 1;
+        else submitInitials();
+      }
+
+      function initialsBack() {
+        if (state !== "initials" || initialSlot === 0) return;
+        initialSlot -= 1;
+      }
+
+      function initialsConfirm() {
+        if (state !== "initials") return;
+        tone(740, 0.05, "triangle", 0.035);
+        if (initialSlot < 2) initialSlot += 1;
+        else submitInitials();
+      }
+
+      function submitInitials() {
+        const name = initials.map(i => INITIAL_CHARS[i]).join("");
+        pendingEntry = { name, score: pendingScore };
+        // cache locally so the player's board survives offline / between visits
+        localScores = sanitizeScores([...localScores, pendingEntry]);
+        saveLocalScores();
+        tone(523, 0.1, "triangle", 0.04);
+        tone(784, 0.14, "triangle", 0.04, 0.09);
+        showGameOver();
       }
 
       function addScore(points, x, y, label) {
@@ -1635,14 +1866,28 @@
         });
       }
 
-      bindHold(leftButton, () => setFlipper("left", true), () => setFlipper("left", false));
-      bindHold(rightButton, () => setFlipper("right", true), () => setFlipper("right", false));
-      bindHold(launchButton, startCharge, releaseLaunch);
+      bindHold(leftButton,
+        () => { if (state === "initials") initialsNav(-1); else setFlipper("left", true); },
+        () => { if (state !== "initials") setFlipper("left", false); });
+      bindHold(rightButton,
+        () => { if (state === "initials") initialsNav(1); else setFlipper("right", true); },
+        () => { if (state !== "initials") setFlipper("right", false); });
+      bindHold(launchButton,
+        () => { if (state === "initials") initialsConfirm(); else startCharge(); },
+        () => { if (state !== "initials") releaseLaunch(); });
 
       const leftKeys = new Set(["KeyZ", "KeyA", "ArrowLeft"]);
       const rightKeys = new Set(["Slash", "KeyL", "ArrowRight"]);
 
       window.addEventListener("keydown", event => {
+        if (state === "initials") {
+          if (event.code === "ArrowLeft" || event.code === "ArrowDown") { event.preventDefault(); if (!event.repeat) initialsNav(-1); }
+          else if (event.code === "ArrowRight" || event.code === "ArrowUp") { event.preventDefault(); if (!event.repeat) initialsNav(1); }
+          else if (event.code === "Enter" || event.code === "Space") { event.preventDefault(); if (!event.repeat) initialsConfirm(); }
+          else if (event.code === "Backspace") { event.preventDefault(); if (!event.repeat) initialsBack(); }
+          else if (/^Key[A-Z]$/.test(event.code)) { event.preventDefault(); if (!event.repeat) initialsType(event.code.charCodeAt(3) - 65); }
+          return;
+        }
         if (event.shiftKey && (event.code === "ArrowLeft" || event.code === "ArrowRight" || event.code === "ArrowUp")) {
           event.preventDefault();
           if (!event.repeat) {
@@ -1670,6 +1915,7 @@
       });
 
       window.addEventListener("keyup", event => {
+        if (state === "initials") return;
         if (leftKeys.has(event.code)) setFlipper("left", false);
         else if (rightKeys.has(event.code)) setFlipper("right", false);
         else if (event.code === "Space") releaseLaunch();
@@ -1705,6 +1951,7 @@
       });
 
       canvas.addEventListener("pointerdown", event => {
+        if (state === "initials") { initialsConfirm(); return; }
         if (state === "intro" || state === "gameover") newGame();
         else if (event.clientX < canvas.getBoundingClientRect().left + canvas.clientWidth / 2) {
           setFlipper("left", true);
@@ -3419,6 +3666,57 @@
         });
       }
 
+      // Arcade initials-entry screen for a qualifying score.
+      function drawInitials() {
+        ctx.save();
+        ctx.fillStyle = "rgba(2,7,6,.9)";
+        ctx.fillRect(0, 0, W, H);
+        ctx.textAlign = "center";
+
+        ctx.fillStyle = "#ff7a32";
+        ctx.font = "900 17px Arial Narrow, sans-serif";
+        ctx.fillText("NEW HIGH SCORE", 300, 232);
+
+        ctx.fillStyle = "#ffb34f";
+        ctx.font = "900 42px ui-monospace, monospace";
+        ctx.fillText(pendingScore.toLocaleString(), 300, 282);
+
+        ctx.fillStyle = "#9be8a0";
+        ctx.font = "900 13px ui-monospace, monospace";
+        ctx.fillText(`RANK #${rankFor(pendingScore)}`, 300, 310);
+
+        const blink = Math.floor(introTime * 2) % 2 === 0;
+        for (let i = 0; i < 3; i++) {
+          const x = 300 + (i - 1) * 66;
+          const active = i === initialSlot;
+          ctx.fillStyle = active ? "rgba(255,122,50,.18)" : "rgba(255,255,255,.05)";
+          roundedRect(ctx, x - 27, 350, 54, 70, 8);
+          ctx.fill();
+          ctx.strokeStyle = active ? "#ff7a32" : "rgba(255,255,255,.2)";
+          ctx.lineWidth = active ? 3 : 2;
+          ctx.stroke();
+          ctx.fillStyle = active && blink ? "#fff7e7" : "#f6e8c2";
+          ctx.font = "900 46px Impact, Arial Narrow, sans-serif";
+          ctx.textBaseline = "middle";
+          ctx.fillText(INITIAL_CHARS[initials[i]], x, 387);
+          ctx.textBaseline = "alphabetic";
+          if (active) {
+            ctx.fillStyle = "#ff7a32";
+            ctx.font = "900 13px Arial, sans-serif";
+            ctx.fillText("▲", x, 342);
+            ctx.fillText("▼", x, 440);
+          }
+        }
+
+        ctx.fillStyle = "#c7d2c9";
+        ctx.font = "900 12px Arial Narrow, sans-serif";
+        ctx.fillText("◀ ▶  CHANGE          PLUNGER  SELECT", 300, 474);
+        ctx.fillStyle = "#66726b";
+        ctx.font = "700 10px Arial, sans-serif";
+        ctx.fillText("or type your initials · ENTER to finish", 300, 494);
+        ctx.restore();
+      }
+
       function draw(time) {
         resizeCanvas();
         const sx = canvas.width / W;
@@ -3459,6 +3757,7 @@
         ctx.restore();
 
         drawBonus();
+        if (state === "initials") drawInitials();
 
         if (paused && state === "playing") {
           ctx.fillStyle = "rgba(2,7,6,.72)";
@@ -3535,6 +3834,8 @@
 
       overlayTitle.innerHTML = "Buck<br>Fever";
       updateHud();
+      renderLeaderboard(null);
+      fetchSharedScores();
       requestAnimationFrame(frame);
     })();
   </script>
