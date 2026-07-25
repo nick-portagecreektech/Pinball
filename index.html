@@ -468,6 +468,7 @@
     }
 
     .launch-meter {
+      position: relative;
       width: 72%;
       height: 5px;
       overflow: hidden;
@@ -475,6 +476,21 @@
       border-radius: 3px;
       background: rgba(255,255,255,.13);
     }
+
+    .launch-meter-band {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 60%;
+      width: 18%;
+      background: rgba(85,215,232,.5);
+      box-shadow: 0 0 7px rgba(85,215,232,.85);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .15s ease;
+    }
+
+    .launch-meter-band.show { opacity: 1; }
 
     .launch-meter-fill {
       width: 0%;
@@ -726,7 +742,7 @@
       <button class="control launch" id="launchButton" type="button" aria-label="Hold to charge the plunger">
         <span class="control-label">Plunger</span>
         <span class="control-key" id="launchStatus">Ready • Space</span>
-        <span class="launch-meter" aria-hidden="true"><span class="launch-meter-fill" id="launchMeter"></span></span>
+        <span class="launch-meter" aria-hidden="true"><span class="launch-meter-fill" id="launchMeter"></span><span class="launch-meter-band" id="launchBand"></span></span>
       </button>
       <button class="control flipper" id="rightButton" type="button" aria-label="Right flipper">
         <span class="control-arrow" aria-hidden="true">▶</span>
@@ -754,6 +770,7 @@
       const SHOOTER_LANE_MIN_X = 508;
       const SHOOTER_LANE_MAX_X = 542;
       const HUNT_LETTERS = ["H", "U", "N", "T"];
+      const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
       const canvas = document.getElementById("gameCanvas");
       const ctx = canvas.getContext("2d");
       const playfieldArt = new Image();
@@ -771,6 +788,7 @@
       const overlayCopy = document.getElementById("overlayCopy");
       const startButton = document.getElementById("startButton");
       const launchMeter = document.getElementById("launchMeter");
+      const launchBand = document.getElementById("launchBand");
       const launchStatus = document.getElementById("launchStatus");
       const soundButton = document.getElementById("soundButton");
       const soundIcon = document.getElementById("soundIcon");
@@ -828,11 +846,38 @@
         { x: 466, y: 244, r: 8, letter: "P", lit: false }
       ];
 
+      // Standup targets: always-physical little bumper-posts flanking the pop
+      // bumpers. Hitting one lights it; lighting all three pays a bonus and
+      // relights them for another lap.
+      const standups = [
+        { x: 150, y: 360, r: 10, lit: false, letter: "D" },
+        { x: 300, y: 250, r: 10, lit: false, letter: "E" },
+        { x: 405, y: 400, r: 10, lit: false, letter: "R" }
+      ];
+
       const spinner = { x: 424, y: 468, r: 20, angle: 0, spin: 0, cooldown: 0 };
+
+      // Capture saucer left of the BUCK bumper. Holds a ball briefly (heldBall
+      // overrides recoverLowerBall), plays a light show, then kicks it back out.
+      const scoop = { x: 150, y: 470, r: 15, flash: 0, cooldown: 0 };
 
       const flippers = {
         left: { x: 196, y: 756, len: 86, angle: .38, target: .38, omega: 0, side: -1 },
-        right: { x: 404, y: 756, len: 86, angle: Math.PI - .38, target: Math.PI - .38, omega: 0, side: 1 }
+        right: { x: 404, y: 756, len: 86, angle: Math.PI - .38, target: Math.PI - .38, omega: 0, side: 1 },
+        // C2: a small left-hand upper flipper the center ramp delivers to. Fires
+        // on the Left button alongside the lower-left flipper (no new control).
+        upper: { x: 150, y: 220, len: 60, angle: .30, target: .30, omega: 0, side: -1 }
+      };
+
+      // C2: center ramp — a diverter mouth in the right-center channel that lifts
+      // the ball along a habitrail up and over to the upper-left flipper.
+      const RAMP = {
+        gx0: 355, gx1: 400, gy0: 470, gy1: 540, gVy: -210,
+        p0: { x: 377, y: 505 },
+        p1: { x: 405, y: 150 },
+        p2: { x: 185, y: 178 },
+        duration: 0.8,
+        flash: 0
       };
 
       let state = "intro";
@@ -840,6 +885,8 @@
       let best = Number(localStorage.getItem("buck-fever-best") || 0);
       let balls = 3;
       let ball = null;
+      let ballList = [];
+      let bonusPending = false;
       let hunt = new Set();
       let flashes = [];
       let particles = [];
@@ -862,6 +909,44 @@
       let ballSaveArmed = false;
       let dropResetTimer = 0;
       let rolloverResetTimer = 0;
+      let bumperHits = 0;
+      let bonusMultiplier = 1;
+      let bonusSeq = null;
+      let skillShotArmed = false;
+      const SKILL_BAND = [0.60, 0.78];
+      let holdBonus = false;
+      let extraBallAwarded = false;
+      let replayAwarded = false;
+      let replayTarget = 0;
+      let huntCycles = 0;
+      let comboCount = 0;
+      let comboTimer = 0;
+      let standupResetTimer = 0;
+      let superPlungeArmed = false;
+      let orbitCooldown = 0;
+      let tiltMeter = 0;
+      let tilted = false;
+      let magSaveArmed = false;
+      let lastMotionNudge = 0;
+      let musicNodes = null;
+      let multiball = false;
+      let lockCount = 0;
+      let lockedBall = null;
+      let jackpot = 0;
+      let jackpotLit = false;
+      let jackpotsCollected = 0;
+      let superJackpotReady = false;
+      const MODES = [
+        { name: "DAWN WATCH", goal: 5, reward: 30000, hint: "BUCK ×5", type: "buck" },
+        { name: "BLIZZARD", goal: 12, reward: 30000, hint: "BUMPERS ×12", type: "bumper" },
+        { name: "FREEZER RUN", goal: 2, reward: 40000, hint: "CAMP BANK ×2", type: "camp" }
+      ];
+      let modeActive = null;
+      let modeTimer = 0;
+      let modeProgress = 0;
+      let modeIndex = 0;
+      const modesDone = new Set();
+      let wizard = false;
 
       bestEl.textContent = formatScore(best);
 
@@ -869,14 +954,39 @@
         return Math.max(0, Math.floor(value)).toString().padStart(7, "0");
       }
 
+      // First score to cross 100k earns an extra ball; first score to beat the
+      // best-at-game-start earns a replay ball. Each fires once per game.
+      function checkScoreAwards() {
+        if (state !== "playing") return;
+        if (!extraBallAwarded && score >= 100000) {
+          extraBallAwarded = true;
+          balls += 1;
+          announceBonus("EXTRA BALL", 300, 300, "#ffd26f");
+        }
+        if (!replayAwarded && replayTarget > 0 && score >= replayTarget) {
+          replayAwarded = true;
+          balls += 1;
+          announceBonus("REPLAY", 300, 344, "#55d7e8");
+        }
+      }
+
       function updateHud() {
+        checkScoreAwards();
         scoreEl.textContent = formatScore(score);
         ballsEl.textContent = balls;
         bestEl.textContent = formatScore(best);
         huntEls.forEach(el => el.classList.toggle("lit", hunt.has(el.dataset.letter)));
         const bonuses = [];
+        if (modeActive) bonuses.push(`${modeActive.name} ${modeProgress}/${modeActive.goal} ${Math.ceil(modeTimer)}s`);
+        if (multiball) {
+          bonuses.push(wizard ? "OPENING DAY" : "MULTIBALL");
+          if (superJackpotReady) bonuses.push("SUPER JP");
+          else if (jackpotLit) bonuses.push("JACKPOT");
+        } else if (lockCount > 0) bonuses.push("BALL LOCKED");
         if (multiplierTimer > 0) bonuses.push(`${scoreMultiplier}X ${Math.ceil(multiplierTimer)}s`);
+        if (bonusMultiplier > 1) bonuses.push(`B×${bonusMultiplier}${holdBonus ? " HOLD" : ""}`);
         if (ballSaveArmed) bonuses.push("SAVE");
+        if (magSaveArmed) bonuses.push("MAGSAVE");
         bonusStatus.textContent = bonuses.join(" • ") || "Bonus";
         bonusStatus.classList.toggle("active", bonuses.length > 0);
       }
@@ -950,9 +1060,40 @@
         scoreMultiplier = 1;
         multiplierTimer = 0;
         ballSaveArmed = false;
+        bumperHits = 0;
+        bonusMultiplier = 1;
+        bonusSeq = null;
+        ballList = [];
+        skillShotArmed = false;
+        holdBonus = false;
+        extraBallAwarded = false;
+        replayAwarded = false;
+        replayTarget = best;
+        huntCycles = 0;
+        comboCount = 0;
+        comboTimer = 0;
+        standupResetTimer = 0;
+        superPlungeArmed = false;
+        tiltMeter = 0;
+        tilted = false;
+        magSaveArmed = false;
+        multiball = false;
+        lockCount = 0;
+        lockedBall = null;
+        jackpot = 0;
+        jackpotLit = false;
+        jackpotsCollected = 0;
+        superJackpotReady = false;
+        modeActive = null;
+        modeTimer = 0;
+        modeProgress = 0;
+        modeIndex = 0;
+        modesDone.clear();
+        wizard = false;
         hunt.clear();
         dropTargets.forEach(target => { target.down = false; });
         rollovers.forEach(rollover => { rollover.lit = false; });
+        standups.forEach(standup => { standup.lit = false; });
         slings.forEach(sling => {
           sling.contact = false;
           sling.cooldown = 0;
@@ -960,6 +1101,11 @@
         spinner.angle = 0;
         spinner.spin = 0;
         spinner.cooldown = 0;
+        scoop.flash = 0;
+        scoop.cooldown = 0;
+        RAMP.flash = 0;
+        flippers.upper.angle = flippers.upper.target = .30;
+        flippers.upper.omega = 0;
         dropResetTimer = 0;
         rolloverResetTimer = 0;
         plungerFlash = 0;
@@ -969,24 +1115,70 @@
         overlay.classList.remove("visible");
         spawnBall();
         updateHud();
+        startMusic();
         canvas.focus({ preventScroll: true });
       }
 
-      function spawnBall() {
-        ball = {
+      function makeBall(props) {
+        return {
           x: PLUNGER_X,
           y: PLUNGER_Y,
           vx: 0,
           vy: 0,
           r: BALL_RADIUS,
-          inLane: true,
-          launched: false,
+          inLane: false,
+          launched: true,
           trail: [],
           restTime: 0,
-          flipperLock: 0
+          flipperLock: 0,
+          loopA: null,
+          loopAccum: 0,
+          held: 0,
+          holdX: 0,
+          holdY: 0,
+          locked: false,
+          onRamp: false,
+          rampT: 0,
+          dead: false,
+          ...props
         };
+      }
+
+      function spawnBall() {
+        ball = makeBall({ inLane: true, launched: false });
+        ballList = [ball];
+        multiball = false;
+        wizard = false;
+        lockCount = 0;
+        lockedBall = null;
+        skillShotArmed = true;
+        // Bonus multiplier resets each ball unless a HOLD BONUS was earned.
+        if (holdBonus) holdBonus = false;
+        else bonusMultiplier = 1;
         settleBallOnPlunger(false);
         resetTimer = 0;
+        bumperHits = 0;
+        tiltMeter = 0;
+        tilted = false;
+      }
+
+      // Add an extra ball already in play (for locks / multiball). It launches
+      // up the shooter lane so it enters the playfield on its own.
+      function addBall() {
+        const extra = makeBall({
+          x: PLUNGER_X, y: 720, inLane: false, launched: true,
+          vx: -20, vy: -1120
+        });
+        ballList.push(extra);
+        lanePulse = 1;
+        plungerFlash = 1;
+        return extra;
+      }
+
+      function activeBallCount() {
+        let n = 0;
+        for (const b of ballList) if (!b.dead) n += 1;
+        return n;
       }
 
       function setPlungerState(nextState) {
@@ -996,7 +1188,7 @@
         launchButton.classList.toggle("is-ready", ready);
         launchButton.classList.toggle("is-charging", chargingNow);
         launchStatus.textContent = {
-          ready: "Ready • Space",
+          ready: skillShotArmed ? "Skill Shot • Space" : "Ready • Space",
           charging: "Pulling…",
           returning: "Ball returning",
           inplay: "Return lane"
@@ -1022,11 +1214,40 @@
         launchButton.classList.remove("is-down");
         launchMeter.style.width = "0%";
         setPlungerState("ready");
+        updateSkillShotUI();
         if (returning) {
           lanePulse = Math.max(lanePulse, .65);
           plungerFlash = 1;
           hitSound("plunger-return");
         }
+      }
+
+      // The skill shot is a decision at ball start: land the charge inside the
+      // lit band, or send the ball cleanly through a U-P lane before it touches
+      // anything. Either one collects the skill bonus.
+      function updateSkillShotUI() {
+        const ready = Boolean(skillShotArmed && ball && ball.inLane && !ball.launched);
+        launchBand.classList.toggle("show", ready);
+        if (ready) {
+          launchBand.style.left = `${SKILL_BAND[0] * 100}%`;
+          launchBand.style.width = `${(SKILL_BAND[1] - SKILL_BAND[0]) * 100}%`;
+        }
+      }
+
+      function disarmSkillShot() {
+        superPlungeArmed = false;
+        if (!skillShotArmed) return;
+        skillShotArmed = false;
+        updateSkillShotUI();
+      }
+
+      function awardSkillShot(label, points, x, y) {
+        skillShotArmed = false;
+        score += points;
+        if (score > best) best = score;
+        announceBonus(`${label} +${points.toLocaleString()}`, x, y, "#55d7e8");
+        updateSkillShotUI();
+        updateHud();
       }
 
       function drainBall() {
@@ -1045,11 +1266,64 @@
         }
         hitSound("drain");
         balls -= 1;
-        ball = null;
+        ball.dead = true;
         setPlungerState("inplay");
-        resetTimer = 1.2;
         shake = 4;
+        bonusPending = true;
         updateHud();
+      }
+
+      // Between balls, tally the collectibles left lit and count them up before
+      // the next ball spawns. If nothing is lit, skip the ceremony and fall back
+      // to the plain 1.2s reset pause.
+      function beginBonus() {
+        const items = [];
+        if (hunt.size) items.push({ label: "HUNT LETTERS", count: hunt.size, per: 1000 });
+        const drops = dropTargets.filter(t => t.down).length;
+        if (drops) items.push({ label: "CAMP DROPS", count: drops, per: 800 });
+        const lanes = rollovers.filter(r => r.lit).length;
+        if (lanes) items.push({ label: "U-P LANES", count: lanes, per: 600 });
+        if (bumperHits) items.push({ label: "BUMPER HITS", count: bumperHits, per: 120 });
+        items.forEach(it => { it.subtotal = it.count * it.per; });
+        const base = items.reduce((sum, it) => sum + it.subtotal, 0);
+        if (base <= 0) { resetTimer = 1.2; return; }
+        bonusSeq = {
+          items, base, mult: bonusMultiplier, total: base * bonusMultiplier,
+          idx: 0, lineTimer: 0, multT: 0, paidExtra: 0, hold: 0, phase: "lines"
+        };
+        hitSound("bonus");
+      }
+
+      function updateBonus(dt) {
+        const seq = bonusSeq;
+        if (seq.phase === "lines") {
+          seq.lineTimer += dt;
+          while (seq.idx < seq.items.length && seq.lineTimer >= 0.34) {
+            seq.lineTimer -= 0.34;
+            score += seq.items[seq.idx].subtotal;
+            if (score > best) best = score;
+            seq.idx += 1;
+            tone(520 + seq.idx * 90, 0.06, "triangle", 0.03);
+            updateHud();
+          }
+          if (seq.idx >= seq.items.length) seq.phase = seq.mult > 1 ? "mult" : "hold";
+        } else if (seq.phase === "mult") {
+          seq.multT += dt;
+          const p = Math.min(1, seq.multT / 0.5);
+          const target = Math.round(seq.base * (seq.mult - 1) * p);
+          score += target - seq.paidExtra;
+          seq.paidExtra = target;
+          if (score > best) best = score;
+          updateHud();
+          if (p >= 1) { seq.phase = "hold"; hitSound("bonus"); shake = Math.max(shake, 3); }
+        } else {
+          seq.hold += dt;
+          if (seq.hold >= 0.85) {
+            bonusSeq = null;
+            if (balls > 0) spawnBall();
+            else endGame();
+          }
+        }
       }
 
       function finishBallReset(dt) {
@@ -1090,6 +1364,21 @@
         updateHud();
       }
 
+      // Any two scoring shots within the combo window chain together; each
+      // extra link pays out and shows an "N-WAY COMBO" floater.
+      function registerCombo(x, y) {
+        comboCount += 1;
+        comboTimer = 1.6;
+        if (comboCount >= 2) {
+          const pts = comboCount * 750;
+          score += pts;
+          if (score > best) best = score;
+          floaters.push({ x, y: y - 30, text: `${comboCount}-WAY COMBO +${pts.toLocaleString()}`, life: 1.3, max: 1.3 });
+          tone(500 + comboCount * 120, 0.08, "square", 0.03);
+          updateHud();
+        }
+      }
+
       function announceBonus(text, x, y, color) {
         floaters.push({ x, y, text, life: 1.6, max: 1.6 });
         burst(x, y + 12, color, 16);
@@ -1107,6 +1396,77 @@
           if (multiplier < scoreMultiplier) announcement = `${scoreMultiplier}X EXTENDED`;
         }
         announceBonus(announcement, x, y, multiplier === 3 ? "#ff7a32" : "#55d7e8");
+        updateHud();
+      }
+
+      // Timed missions started by completing HUNT. Each has a 30s objective and
+      // a reward; finishing all three arms the wizard mode.
+      function startMode() {
+        if (modeActive) return;
+        modeActive = MODES[modeIndex % MODES.length];
+        modeIndex += 1;
+        modeTimer = 30;
+        modeProgress = 0;
+        announceBonus(`${modeActive.name} — ${modeActive.hint}`, 300, 250, "#9be8a0");
+        updateHud();
+      }
+
+      // Wizard mode: all three missions complete → OPENING DAY, a 6-ball
+      // multiball with every shot doubled for the duration.
+      function startWizard() {
+        wizard = true;
+        multiball = true;
+        lockCount = 0;
+        lockedBall = null;
+        jackpot = 30000;
+        jackpotLit = true;
+        jackpotsCollected = 0;
+        superJackpotReady = false;
+        modesDone.clear();
+        modeActive = null;
+        modeTimer = 0;
+        announceBonus("OPENING DAY!", 300, 280, "#ff7a32");
+        feverFlash = 1;
+        shake = 12;
+        hitSound("fever");
+        activateMultiplier(2, 40, "OPENING DAY 2X • 40s", 300, 330);
+        const need = Math.max(0, 6 - activeBallCount());
+        for (let i = 0; i < need; i++) {
+          const b = addBall();
+          b.x = 200 + i * 45;
+          b.y = 300 + (i % 2) * 44;
+          b.vx = (i % 2 ? 1 : -1) * (70 + i * 22);
+          b.vy = -200 - i * 26;
+          b.held = 0;
+          b.locked = false;
+        }
+        updateHud();
+      }
+
+      function modeEvent(type) {
+        if (!modeActive || modeActive.type !== type) return;
+        modeProgress += 1;
+        floaters.push({ x: 300, y: 240, text: `${modeActive.name} ${modeProgress}/${modeActive.goal}`, life: 0.9, max: 0.9 });
+        if (modeProgress >= modeActive.goal) completeMode();
+        else updateHud();
+      }
+
+      function completeMode() {
+        const done = modeActive;
+        modesDone.add(done.name);
+        addScore(done.reward, 300, 300, `${done.name} COMPLETE`);
+        announceBonus(`${done.name} COMPLETE`, 300, 280, "#ffd26f");
+        feverFlash = Math.max(feverFlash, 0.5);
+        modeActive = null;
+        modeTimer = 0;
+        updateHud();
+        if (modesDone.size >= MODES.length) startWizard();
+      }
+
+      function failMode() {
+        floaters.push({ x: 300, y: 260, text: `${modeActive.name} OVER`, life: 1.1, max: 1.1 });
+        modeActive = null;
+        modeTimer = 0;
         updateHud();
       }
 
@@ -1132,6 +1492,84 @@
         }
       }
 
+      // Nudge: a small one-shot shove of the ball in play. Each nudge feeds the
+      // tilt meter — nudge too hard, too fast, and the table TILTs (ball lost,
+      // no save, no bonus).
+      function nudgeBall(dx, dy) {
+        if (state !== "playing" || paused || tilted) return;
+        if (ball && !ball.inLane) {
+          ball.vx += dx;
+          ball.vy += dy;
+        }
+        shake = Math.max(shake, 2.5);
+        registerTilt();
+      }
+
+      function registerTilt() {
+        tiltMeter += 1;
+        if (tiltMeter >= 3) {
+          doTilt();
+        } else if (tiltMeter >= 2) {
+          floaters.push({ x: 300, y: 300, text: "TILT WARNING", life: 1.1, max: 1.1 });
+          tone(160, 0.14, "square", 0.035);
+        }
+      }
+
+      function doTilt() {
+        if (tilted || ballList.length === 0) return;
+        tilted = true;
+        magSaveArmed = false;
+        ballSaveArmed = false;
+        floaters.push({ x: 300, y: 320, text: "TILT", life: 1.8, max: 1.8 });
+        shake = 12;
+        tone(120, 0.5, "sawtooth", 0.05);
+        hitSound("drain");
+        balls -= 1;
+        ballList.forEach(b => { b.dead = true; });
+        bonusPending = false;
+        setPlungerState("inplay");
+        resetTimer = 1.3;
+        updateHud();
+      }
+
+      function armMagSave() {
+        magSaveArmed = true;
+        announceBonus("MAG SAVE ARMED", 300, 360, "#55d7e8");
+        updateHud();
+      }
+
+      function startMusic() {
+        ensureAudio();
+        if (!audioContext || musicNodes) return;
+        const osc = audioContext.createOscillator();
+        const osc2 = audioContext.createOscillator();
+        const filter = audioContext.createBiquadFilter();
+        const gain = audioContext.createGain();
+        osc.type = "sawtooth";
+        osc.frequency.value = 55;
+        osc2.type = "sine";
+        osc2.frequency.value = 82.41;
+        filter.type = "lowpass";
+        filter.frequency.value = 360;
+        gain.gain.value = 0;
+        osc.connect(filter);
+        osc2.connect(filter);
+        filter.connect(gain).connect(audioContext.destination);
+        osc.start();
+        osc2.start();
+        musicNodes = { osc, osc2, filter, gain };
+      }
+
+      function updateMusic() {
+        if (!musicNodes || !audioContext) return;
+        const speed = ball ? Math.hypot(ball.vx, ball.vy) : 0;
+        const active = !muted && state === "playing" && !paused;
+        const target = active ? 0.006 + Math.min(0.02, speed / MAX_SPEED * 0.02) : 0;
+        const now = audioContext.currentTime;
+        musicNodes.gain.gain.setTargetAtTime(target, now, 0.2);
+        musicNodes.filter.frequency.setTargetAtTime(320 + Math.min(560, speed * 0.55), now, 0.3);
+      }
+
       function startCharge() {
         if (state !== "playing" || !ball || !ball.inLane || ball.launched || ball.y < 720) return;
         ensureAudio();
@@ -1154,6 +1592,13 @@
           lanePulse = 1;
           plungerFlash = 1;
           setPlungerState("inplay");
+          if (skillShotArmed && charge >= SKILL_BAND[0] && charge <= SKILL_BAND[1]) {
+            awardSkillShot("PERFECT PLUNGE", 6000, 300, 720);
+          }
+          // A full-power plunge arms the super skill shot: thread both U-P lanes
+          // untouched to collect it.
+          superPlungeArmed = skillShotArmed && charge >= 0.92;
+          updateSkillShotUI();
         } else if (ball?.inLane && !ball.launched) {
           setPlungerState("ready");
         }
@@ -1164,8 +1609,13 @@
       function setFlipper(side, down) {
         const flipper = flippers[side];
         const button = side === "left" ? leftButton : rightButton;
-        if (side === "left") flipper.target = down ? -.5 : .38;
-        else flipper.target = down ? Math.PI + .5 : Math.PI - .38;
+        if (side === "left") {
+          flipper.target = down ? -.5 : .38;
+          // the upper flipper fires with the lower-left flipper
+          flippers.upper.target = down ? -.55 : .30;
+        } else {
+          flipper.target = down ? Math.PI + .5 : Math.PI - .38;
+        }
         button.classList.toggle("is-down", down);
         if (down) hitSound("flipper");
       }
@@ -1192,6 +1642,15 @@
       const rightKeys = new Set(["Slash", "KeyL", "ArrowRight"]);
 
       window.addEventListener("keydown", event => {
+        if (event.shiftKey && (event.code === "ArrowLeft" || event.code === "ArrowRight" || event.code === "ArrowUp")) {
+          event.preventDefault();
+          if (!event.repeat) {
+            if (event.code === "ArrowLeft") nudgeBall(-44, -12);
+            else if (event.code === "ArrowRight") nudgeBall(44, -12);
+            else nudgeBall(0, -46);
+          }
+          return;
+        }
         if (leftKeys.has(event.code)) {
           event.preventDefault();
           if (!event.repeat) setFlipper("left", true);
@@ -1220,6 +1679,18 @@
         setFlipper("right", false);
         releaseLaunch();
       });
+
+      // Mobile: a hard shake of the device registers as a nudge toward tilt.
+      window.addEventListener("devicemotion", event => {
+        if (state !== "playing" || paused || !ball || ball.inLane) return;
+        const a = event.accelerationIncludingGravity;
+        if (!a) return;
+        const mag = Math.hypot(a.x || 0, a.y || 0, a.z || 0);
+        if (mag > 28 && introTime - lastMotionNudge > 0.7) {
+          lastMotionNudge = introTime;
+          nudgeBall(Math.sign(a.x || 1) * 30, -20);
+        }
+      }, { passive: true });
 
       startButton.addEventListener("click", newGame);
       soundButton.addEventListener("click", () => {
@@ -1334,6 +1805,8 @@
         const dist2 = dx * dx + dy * dy;
         if (dist2 >= minDist * minDist) return false;
 
+        disarmSkillShot();
+
         // The underside is intentionally non-trapping. A ball that reaches the
         // apron passes toward the drain instead of being pinched behind a bat.
         if (ball.y > point.y + 4) {
@@ -1407,12 +1880,31 @@
       function physics(dt) {
         updateFlipper(flippers.left, dt);
         updateFlipper(flippers.right, dt);
+        updateFlipper(flippers.upper, dt);
 
-        if (!ball) {
-          finishBallReset(dt);
+        if (ballList.length === 0) {
+          ball = null;
+          if (bonusSeq) updateBonus(dt);
+          else finishBallReset(dt);
           return;
         }
 
+        // Simulate every ball in play against the shared hardware.
+        for (let i = 0; i < ballList.length; i++) {
+          ball = ballList[i];
+          if (!ball.dead) stepBall(dt);
+        }
+        if (ballList.some(b => b.dead)) ballList = ballList.filter(b => !b.dead);
+        ball = ballList[0] || null;
+
+        // When the last ball drains, run the end-of-ball bonus once.
+        if (ballList.length === 0 && bonusPending) {
+          bonusPending = false;
+          beginBonus();
+        }
+      }
+
+      function stepBall(dt) {
         if (ball.inLane && !ball.launched) {
           if (charging) {
             charge = Math.min(1, charge + dt * .72);
@@ -1422,6 +1914,48 @@
           ball.y = PLUNGER_Y;
           ball.vx = 0;
           ball.vy = 0;
+          return;
+        }
+
+        if (ball.held > 0 || ball.locked) {
+          ball.x = ball.holdX;
+          ball.y = ball.holdY;
+          ball.vx = 0;
+          ball.vy = 0;
+          ball.trail.length = 0;
+          scoop.flash = Math.max(scoop.flash, 0.6);
+          if (!ball.locked) {
+            ball.held -= dt;
+            if (ball.held <= 0) {
+              ball.held = 0;
+              ejectFromScoop();
+            }
+          }
+          return;
+        }
+
+        // C2: while riding the ramp, the ball is scripted along the habitrail —
+        // no gravity or collisions — then delivered above the upper flipper.
+        if (ball.onRamp) {
+          ball.rampT += dt / RAMP.duration;
+          RAMP.flash = Math.max(RAMP.flash, 0.5);
+          if (ball.rampT >= 1) {
+            ball.onRamp = false;
+            const end = rampPos(1);
+            ball.x = end.x;
+            ball.y = end.y;
+            ball.vx = 8;
+            ball.vy = 120;
+            addScore(6000, end.x, end.y - 22, "RAMP +6,000");
+            registerCombo(end.x, end.y);
+            RAMP.flash = 1;
+          } else {
+            const p = rampPos(ball.rampT);
+            ball.x = p.x;
+            ball.y = p.y;
+            ball.vx = 0;
+            ball.vy = 0;
+          }
           return;
         }
 
@@ -1453,6 +1987,7 @@
           );
           if (collided && canFire) {
             sling.cooldown = .22;
+            disarmSkillShot();
             flashes.push({ id: `s${index}`, x: (sling.x1 + sling.x2) / 2, y: (sling.y1 + sling.y2) / 2, life: .28, max: .28 });
             addScore(350, (sling.x1 + sling.x2) / 2, (sling.y1 + sling.y2) / 2, "+350");
             burst(ball.x, ball.y, "#ff5a1f", 7);
@@ -1464,11 +1999,50 @@
           if (collideCircle(bumper, .72, 280)) {
             if (!flashes.some(f => f.id === `b${index}` && f.life > .12)) {
               flashes.push({ id: `b${index}`, x: bumper.x, y: bumper.y, life: .34, max: .34 });
+              bumperHits += 1;
+              disarmSkillShot();
+              if (multiball) jackpot += 500;
               addScore(750, bumper.x, bumper.y - bumper.r, "+750");
               burst(bumper.x, bumper.y, index === 1 ? "#55d7e8" : "#ff7a32", 12);
               hitSound("bumper");
+              registerCombo(bumper.x, bumper.y);
+              modeEvent("bumper");
+              if (index === 2) modeEvent("buck");
               shake = Math.max(shake, 2.5);
               navigator.vibrate?.(12);
+            }
+          }
+        });
+
+        const scoopDx = ball.x - scoop.x;
+        const scoopDy = ball.y - scoop.y;
+        if (scoop.cooldown <= 0 && scoopDx * scoopDx + scoopDy * scoopDy < scoop.r * scoop.r) {
+          captureScoop();
+          return;
+        }
+
+        // C2: enter the center ramp when shot up through its mouth fast enough.
+        if (ball.x >= RAMP.gx0 && ball.x <= RAMP.gx1 &&
+            ball.y >= RAMP.gy0 && ball.y <= RAMP.gy1 && ball.vy < RAMP.gVy) {
+          enterRamp();
+          return;
+        }
+
+        standups.forEach((standup, index) => {
+          if (collideCircle(standup, .68, 0) && !standup.lit) {
+            standup.lit = true;
+            disarmSkillShot();
+            addScore(400, standup.x, standup.y - 20, "+400");
+            flashes.push({ id: `u${index}`, x: standup.x, y: standup.y, life: .35, max: .35 });
+            burst(standup.x, standup.y, "#9be8a0", 7);
+            hitSound("target");
+            registerCombo(standup.x, standup.y);
+            navigator.vibrate?.(8);
+            if (standups.every(s => s.lit)) {
+              addScore(3000, 300, 320, "STANDUPS +3,000");
+              if (!magSaveArmed) armMagSave();
+              standupResetTimer = 1.2;
+              hitSound("fever");
             }
           }
         });
@@ -1476,16 +2050,24 @@
         huntTargets.forEach((target, index) => {
           if (collideCircle(target, .5, 70) && !hunt.has(target.letter)) {
             hunt.add(target.letter);
+            disarmSkillShot();
             addScore(2500, target.x, target.y - 25, `${target.letter} +2,500`);
             flashes.push({ id: `t${index}`, x: target.x, y: target.y, life: .5, max: .5 });
             burst(target.x, target.y, "#ffe7a6", 14);
             hitSound("target");
+            registerCombo(target.x, target.y);
+            navigator.vibrate?.(10);
             if (hunt.size === 4) {
-              addScore(25000, 300, 370, "BUCK FEVER +25,000");
-              activateMultiplier(3, 10, "BUCK FEVER 3X • 10s", 300, 330);
+              huntCycles += 1;
+              const mult = [3, 5, 6][Math.min(huntCycles - 1, 2)];
+              const feverName = huntCycles >= 2 ? "SUPER HUNT" : "BUCK FEVER";
+              const feverPts = 25000 + (huntCycles - 1) * 10000;
+              addScore(feverPts, 300, 370, `${feverName} +${feverPts.toLocaleString()}`);
+              activateMultiplier(mult, 10, `${feverName} ${mult}X • 10s`, 300, 330);
               feverFlash = 1;
               shake = 9;
               hitSound("fever");
+              startMode();
               setTimeout(() => {
                 hunt.clear();
                 updateHud();
@@ -1498,13 +2080,17 @@
         dropTargets.forEach((target, index) => {
           if (!target.down && collideCircle(target, .42, 55)) {
             target.down = true;
+            disarmSkillShot();
             addScore(1000, target.x, target.y - 24, `${target.letter} +1,000`);
             flashes.push({ id: `d${index}`, x: target.x, y: target.y, life: .4, max: .4 });
             burst(target.x, target.y, "#d8aa54", 8);
             hitSound("target");
+            registerCombo(target.x, target.y);
+            navigator.vibrate?.(10);
             if (dropTargets.every(item => item.down)) {
               addScore(5000, 260, 510, "CAMP +5,000");
               armTrailSave();
+              modeEvent("camp");
               dropResetTimer = 1.4;
               hitSound("fever");
             }
@@ -1520,9 +2106,22 @@
             addScore(500, rollover.x, rollover.y - 18, `${rollover.letter} +500`);
             flashes.push({ id: `r${index}`, x: rollover.x, y: rollover.y, life: .45, max: .45 });
             tone(620 + index * 140, .08, "triangle", .035);
+            registerCombo(rollover.x, rollover.y);
+            navigator.vibrate?.(8);
+            if (skillShotArmed) awardSkillShot("SKILL SHOT", 9000, rollover.x, rollover.y - 30);
             if (rollovers.every(item => item.lit)) {
               addScore(3000, 445, 190, "U.P. +3,000");
               activateMultiplier(2, 12, "YOOPER 2X • 12s", 445, 170);
+              bonusMultiplier = Math.min(5, bonusMultiplier + 1);
+              holdBonus = true;
+              announceBonus("HOLD BONUS", 445, 210, "#ffd26f");
+              if (superPlungeArmed) {
+                superPlungeArmed = false;
+                score += 12000;
+                if (score > best) best = score;
+                announceBonus("SUPER SKILL SHOT +12,000", 300, 260, "#ffd26f");
+                updateHud();
+              }
               rolloverResetTimer = 1.2;
             }
           }
@@ -1531,15 +2130,54 @@
         if (collideCircle(spinner, .35, 35) && spinner.cooldown <= 0) {
           spinner.spin = Math.sign(ball.vx || 1) * (12 + Math.min(12, Math.hypot(ball.vx, ball.vy) / 65));
           spinner.cooldown = .2;
+          disarmSkillShot();
           addScore(250, spinner.x, spinner.y - 28, "+250");
           flashes.push({ id: "spinner", x: spinner.x, y: spinner.y, life: .3, max: .3 });
           tone(880, .045, "square", .022);
+          registerCombo(spinner.x, spinner.y);
+          if (multiball && jackpotLit) collectJackpot();
+        }
+
+        // Secret skill shot: reach the top-left orbit untouched off the plunge.
+        if (skillShotArmed && !ball.inLane && ball.x < 135 && ball.y < 185) {
+          awardSkillShot("SECRET SHOT", 12000, ball.x + 20, ball.y + 30);
+        }
+
+        // Orbit made: a fast pass across the top lane (the left-orbit return).
+        if (orbitCooldown <= 0 && !ball.inLane && ball.y < 118 && Math.abs(ball.vx) > 170) {
+          orbitCooldown = 1.1;
+          addScore(2000, 300, 108, "ORBIT +2,000");
+          registerCombo(300, 118);
+          lanePulse = Math.max(lanePulse, 0.8);
+        }
+
+        // Spiral shot: a full loop around the BUCK bumper (angle accumulator).
+        const loopDx = ball.x - 276;
+        const loopDy = ball.y - 452;
+        if (!ball.inLane && loopDx * loopDx + loopDy * loopDy < 115 * 115) {
+          const a = Math.atan2(loopDy, loopDx);
+          if (ball.loopA !== null) {
+            let d = a - ball.loopA;
+            if (d > Math.PI) d -= Math.PI * 2;
+            if (d < -Math.PI) d += Math.PI * 2;
+            ball.loopAccum += d;
+          }
+          ball.loopA = a;
+          if (Math.abs(ball.loopAccum) > Math.PI * 1.85) {
+            ball.loopAccum = 0;
+            addScore(3000, 276, 452, "BUCK LOOP +3,000");
+            registerCombo(276, 452);
+          }
+        } else {
+          ball.loopA = null;
+          ball.loopAccum = 0;
         }
 
         if (updateShooterLaneState()) return;
 
         collideFlipper(flippers.left);
         collideFlipper(flippers.right);
+        collideFlipper(flippers.upper);
         recoverLowerBall(dt);
 
         if (ball.inLane && ball.y < 205) {
@@ -1547,12 +2185,193 @@
           setPlungerState("inplay");
         }
 
-        if (ball.y > 880 || ball.x < -40 || ball.x > W + 40) drainBall();
-
-        if (ball) {
-          ball.trail.push({ x: ball.x, y: ball.y });
-          if (ball.trail.length > 8) ball.trail.shift();
+        // Magnetic save: catch a ball sinking down an outlane and kick it back in.
+        if (magSaveArmed && !ball.inLane && ball.vy > 0 && ball.y > 775 && ball.y < 852 &&
+            (ball.x < 150 || (ball.x > 400 && ball.x < 505))) {
+          magSaveArmed = false;
+          ball.vy = -320;
+          ball.vx += Math.sign(300 - ball.x) * 190;
+          lanePulse = 1;
+          shake = 4;
+          floaters.push({ x: ball.x, y: ball.y - 20, text: "MAG SAVE!", life: 1.4, max: 1.4 });
+          burst(ball.x, ball.y, "#55d7e8", 12);
+          hitSound("save");
+          updateHud();
         }
+
+        if (ball.y > 880 || ball.x < -40 || ball.x > W + 40) {
+          loseBall();
+          return;
+        }
+
+        ball.trail.push({ x: ball.x, y: ball.y });
+        if (ball.trail.length > 8) ball.trail.shift();
+      }
+
+      function captureScoop() {
+        disarmSkillShot();
+        scoop.flash = 1;
+        burst(scoop.x, scoop.y, "#ffd26f", 14);
+        // Park the ball in the saucer.
+        ball.holdX = scoop.x;
+        ball.holdY = scoop.y;
+        ball.x = scoop.x;
+        ball.y = scoop.y;
+        ball.vx = 0;
+        ball.vy = 0;
+
+        if (multiball) {
+          // During multiball the scoop relights the jackpot then ejects.
+          ball.held = 0.6;
+          jackpotLit = true;
+          announceBonus("JACKPOT LIT", scoop.x, scoop.y - 40, "#ffd26f");
+          addScore(2500, scoop.x, scoop.y - 26, "SCOOP +2,500");
+          updateHud();
+          return;
+        }
+
+        if (lockCount === 0) {
+          // First capture locks the ball and kicks a fresh ball into play.
+          ball.held = 0;
+          ball.locked = true;
+          lockedBall = ball;
+          lockCount = 1;
+          addScore(3000, scoop.x, scoop.y - 26, "BALL LOCKED");
+          announceBonus("BALL LOCKED", scoop.x, scoop.y - 42, "#ffd26f");
+          addBall();
+          return;
+        }
+
+        // Second capture starts multiball.
+        startMultiball();
+      }
+
+      // Collected at the spinner during multiball. Every third jackpot arms the
+      // super jackpot; the scoop relights the jackpot between collects.
+      function collectJackpot() {
+        if (superJackpotReady) {
+          const value = jackpot * 3;
+          score += value;
+          if (score > best) best = score;
+          announceBonus(`SUPER JACKPOT +${value.toLocaleString()}`, 300, 300, "#ff7a32");
+          feverFlash = Math.max(feverFlash, 0.6);
+          superJackpotReady = false;
+          jackpotsCollected = 0;
+        } else {
+          score += jackpot;
+          if (score > best) best = score;
+          announceBonus(`JACKPOT +${jackpot.toLocaleString()}`, spinner.x, spinner.y - 30, "#ffd26f");
+          jackpotsCollected += 1;
+          if (jackpotsCollected >= 3) superJackpotReady = true;
+        }
+        jackpotLit = false;
+        jackpot += 5000;
+        shake = Math.max(shake, 5);
+        updateHud();
+      }
+
+      function rampPos(t) {
+        const u = 1 - t;
+        return {
+          x: u * u * RAMP.p0.x + 2 * u * t * RAMP.p1.x + t * t * RAMP.p2.x,
+          y: u * u * RAMP.p0.y + 2 * u * t * RAMP.p1.y + t * t * RAMP.p2.y
+        };
+      }
+
+      function enterRamp() {
+        ball.onRamp = true;
+        ball.rampT = 0;
+        ball.vx = 0;
+        ball.vy = 0;
+        ball.trail.length = 0;
+        disarmSkillShot();
+        RAMP.flash = 1;
+        hitSound("launch");
+        floaters.push({ x: RAMP.p0.x, y: RAMP.p0.y - 20, text: "RAMP!", life: 1, max: 1 });
+      }
+
+      function ejectFromScoop(b = ball) {
+        b.y = scoop.y - (scoop.r + b.r + 2);
+        b.vy = -560;
+        b.vx = 150;
+        b.inLane = false;
+        b.launched = true;
+        b.held = 0;
+        b.locked = false;
+        scoop.cooldown = 0.5;
+        lanePulse = Math.max(lanePulse, 0.6);
+        hitSound("launch");
+      }
+
+      function startMultiball() {
+        multiball = true;
+        lockCount = 0;
+        jackpot = 25000;
+        jackpotLit = true;
+        jackpotsCollected = 0;
+        superJackpotReady = false;
+        scoop.flash = 1;
+        const locked = lockedBall;
+        lockedBall = null;
+        if (locked && locked !== ball) {
+          locked.locked = false;
+          locked.held = 0;
+          locked.x = scoop.x - 18;
+          locked.y = scoop.y - (scoop.r + locked.r + 4);
+          locked.vx = -150;
+          locked.vy = -540;
+          locked.inLane = false;
+          locked.launched = true;
+        }
+        ball.locked = false;
+        ball.held = 0;
+        ball.x = scoop.x + 18;
+        ball.y = scoop.y - (scoop.r + ball.r + 4);
+        ball.vx = 150;
+        ball.vy = -540;
+        ball.inLane = false;
+        ball.launched = true;
+        scoop.cooldown = 0.6;
+        announceBonus("MULTIBALL!", 300, 300, "#55d7e8");
+        lanePulse = 1;
+        shake = 8;
+        hitSound("fever");
+        updateHud();
+      }
+
+      // A ball left the playfield. During multiball just remove it; on the last
+      // ball, hand off to drainBall (which handles the ball save and the loss).
+      function loseBall() {
+        if (activeBallCount() > 1) {
+          ball.dead = true;
+          tone(200, 0.14, "sawtooth", 0.022);
+          shake = Math.max(shake, 3);
+          floaters.push({ x: ball.x, y: Math.min(ball.y, 840) - 20, text: "BALL LOST", life: 1, max: 1 });
+          if (activeBallCount() <= 1) {
+            multiball = false;
+            wizard = false;
+            // If the only survivor is a locked ball, release it so play continues.
+            const last = ballList.find(b => !b.dead);
+            if (last && last.locked) {
+              last.locked = false;
+              last.held = 0;
+              last.x = scoop.x;
+              last.y = scoop.y - (scoop.r + last.r + 3);
+              last.vx = 120;
+              last.vy = -520;
+              last.inLane = false;
+              last.launched = true;
+              lockedBall = null;
+              lockCount = 0;
+              scoop.cooldown = 0.5;
+              floaters.push({ x: scoop.x, y: scoop.y - 30, text: "LOCK RELEASED", life: 1.2, max: 1.2 });
+            } else {
+              floaters.push({ x: 300, y: 300, text: "SINGLE BALL", life: 1.1, max: 1.1 });
+            }
+          }
+          return;
+        }
+        drainBall();
       }
 
       function updateEffects(dt) {
@@ -1570,10 +2389,27 @@
           f.y -= 35 * dt;
         });
         floaters = floaters.filter(f => f.life > 0);
+        // F6: during fever, sparks stream from each HUNT target toward center.
+        if (feverFlash > 0.3 && !reduceMotion) {
+          huntTargets.forEach(t => {
+            if (Math.random() < 0.28) {
+              const ang = Math.atan2(400 - t.y, 300 - t.x);
+              particles.push({
+                x: t.x, y: t.y,
+                vx: Math.cos(ang) * 200, vy: Math.sin(ang) * 200,
+                life: 0.5, max: 0.6, color: "#ffd27a", size: 2 + Math.random() * 2
+              });
+            }
+          });
+        }
         shake = Math.max(0, shake - dt * 28);
         lanePulse = Math.max(0, lanePulse - dt * 1.7);
         plungerFlash = Math.max(0, plungerFlash - dt * 3.2);
         feverFlash = Math.max(0, feverFlash - dt * 1.2);
+        if (comboTimer > 0) {
+          comboTimer = Math.max(0, comboTimer - dt);
+          if (comboTimer <= 0) comboCount = 0;
+        }
         if (state === "playing" && !paused && multiplierTimer > 0) {
           const previousSecond = Math.ceil(multiplierTimer);
           multiplierTimer = Math.max(0, multiplierTimer - dt);
@@ -1601,6 +2437,23 @@
           rolloverResetTimer -= dt;
           if (rolloverResetTimer <= 0) rollovers.forEach(rollover => { rollover.lit = false; });
         }
+
+        if (standupResetTimer > 0) {
+          standupResetTimer -= dt;
+          if (standupResetTimer <= 0) standups.forEach(standup => { standup.lit = false; });
+        }
+
+        orbitCooldown = Math.max(0, orbitCooldown - dt);
+        tiltMeter = Math.max(0, tiltMeter - dt * 0.7);
+        if (modeActive && state === "playing" && !paused) {
+          const prev = Math.ceil(modeTimer);
+          modeTimer = Math.max(0, modeTimer - dt);
+          if (modeTimer <= 0) failMode();
+          else if (Math.ceil(modeTimer) !== prev) updateHud();
+        }
+        scoop.cooldown = Math.max(0, scoop.cooldown - dt);
+        scoop.flash = Math.max(0, scoop.flash - dt * 2);
+        RAMP.flash = Math.max(0, RAMP.flash - dt * 2);
       }
 
       function roundedRect(context, x, y, width, height, radius) {
@@ -1702,6 +2555,54 @@
         ctx.restore();
       }
 
+      // F4: a DMD-style dot-matrix band across the top — score plus a scrolling
+      // ticker that reflects the current mode / multiball / wizard state.
+      function drawDMD(time) {
+        const bx = 92, by = 8, bw = 416, bh = 30;
+        ctx.save();
+        ctx.fillStyle = "#080b08";
+        roundedRect(ctx, bx, by, bw, bh, 5);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,150,50,.35)";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        roundedRect(ctx, bx, by, bw, bh, 5);
+        ctx.clip();
+
+        const amber = feverFlash > 0 ? "#ffe0a0" : multiball ? "#7cf0ff" : "#ff9a3c";
+        ctx.fillStyle = amber;
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.font = "900 18px ui-monospace, monospace";
+        ctx.fillText(formatScore(score), bx + 8, by + bh / 2 + 1);
+
+        const msg = wizard ? "OPENING DAY • ALL SHOTS 2X • "
+          : multiball ? "MULTIBALL • SPINNER COLLECTS JACKPOT • "
+          : modeActive ? `${modeActive.name} • ${modeActive.hint} • `
+          : "BUCK FEVER • LIGHT H-U-N-T • WAKE THE CAMP • ";
+        const tx = bx + 150;
+        const tw = bw - 158;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(tx, by, tw, bh);
+        ctx.clip();
+        ctx.font = "900 12px ui-monospace, monospace";
+        const textWidth = ctx.measureText(msg).width;
+        const scroll = reduceMotion ? 0 : (time * 0.06) % textWidth;
+        ctx.fillText(msg, tx + tw - scroll, by + bh / 2 + 1);
+        ctx.fillText(msg, tx + tw - scroll - textWidth, by + bh / 2 + 1);
+        ctx.restore();
+
+        // dot-matrix mesh: dark grid breaks the lit text into dots
+        ctx.fillStyle = "rgba(4,7,5,.5)";
+        for (let y = by; y < by + bh; y += 3) {
+          for (let x = bx; x < bx + bw; x += 3) {
+            ctx.fillRect(x + 1, y + 1, 1.3, 1.3);
+          }
+        }
+        ctx.restore();
+      }
+
       function drawTopper() {
         ctx.save();
         ctx.translate(300, 92);
@@ -1754,6 +2655,12 @@
       function drawBumper(bumper, index, time) {
         const flash = flashes.find(f => f.id === `b${index}`);
         const pulse = flash ? flash.life / flash.max : 0;
+        // F3: cap briefly scales up on a hit; ring color-cycles during fever.
+        const capR = bumper.r * (1 + pulse * 0.06);
+        const feverCycle = feverFlash > 0
+          ? `hsl(${Math.round((time * 0.18 + index * 90) % 360)}, 90%, 62%)`
+          : null;
+        const rimColor = feverCycle || (index === 1 ? "#55d7e8" : "#ff6b2b");
         ctx.save();
         ctx.translate(bumper.x, bumper.y);
         const glow = ctx.createRadialGradient(0, 0, 6, 0, 0, bumper.r + 32 + pulse * 18);
@@ -1763,20 +2670,20 @@
         ctx.fillRect(-90, -90, 180, 180);
 
         ctx.fillStyle = "#070c0a";
-        ctx.strokeStyle = index === 1 ? "#55d7e8" : "#ff6b2b";
+        ctx.strokeStyle = rimColor;
         ctx.lineWidth = 6 + pulse * 4;
         ctx.beginPath();
-        ctx.arc(0, 0, bumper.r, 0, Math.PI * 2);
+        ctx.arc(0, 0, capR, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
 
         ctx.save();
         ctx.rotate(time * .00035 + bumper.phase);
         ctx.setLineDash([5, 8]);
-        ctx.strokeStyle = "rgba(255,238,199,.55)";
+        ctx.strokeStyle = feverCycle ? "rgba(255,255,255,.75)" : "rgba(255,238,199,.55)";
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.arc(0, 0, bumper.r - 9, 0, Math.PI * 2);
+        ctx.arc(0, 0, capR - 9, 0, Math.PI * 2);
         ctx.stroke();
         ctx.restore();
 
@@ -2002,26 +2909,52 @@
       }
 
       function drawBall() {
-        if (!ball) return;
+        ballList.forEach(drawOneBall);
+      }
+
+      const BALL_TINTS = ["#dceee7", "#ffd9a0", "#9be8a0", "#ff9a7c", "#a0d8ff", "#e6b0ff"];
+
+      function drawOneBall(b) {
+        if (!b || b.dead) return;
+        const multi = ballList.length > 1;
+        const tint = multi ? BALL_TINTS[Math.max(0, ballList.indexOf(b)) % BALL_TINTS.length] : "#dceee7";
+
+        // soft contact shadow on the playfield
         ctx.save();
-        ball.trail.forEach((point, i) => {
-          ctx.globalAlpha = (i / ball.trail.length) * .1;
-          ctx.fillStyle = "#dceee7";
+        ctx.globalAlpha = 0.26;
+        ctx.fillStyle = "#000";
+        ctx.beginPath();
+        ctx.ellipse(b.x + 3, b.y + 6, b.r * 0.95, b.r * 0.58, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+
+        ctx.save();
+        // comet trail, tinted per ball during multiball
+        b.trail.forEach((point, i) => {
+          ctx.globalAlpha = (i / b.trail.length) * (multi ? .18 : .1);
+          ctx.fillStyle = tint;
           ctx.beginPath();
-          ctx.arc(point.x, point.y, ball.r * (i / ball.trail.length), 0, Math.PI * 2);
+          ctx.arc(point.x, point.y, b.r * (i / b.trail.length), 0, Math.PI * 2);
           ctx.fill();
         });
         ctx.globalAlpha = 1;
-        ctx.shadowColor = "#d6f8ff";
+        ctx.shadowColor = multi ? tint : "#d6f8ff";
         ctx.shadowBlur = 10;
-        const metal = ctx.createRadialGradient(ball.x - 4, ball.y - 5, 1, ball.x, ball.y, ball.r);
+        const metal = ctx.createRadialGradient(b.x - 4, b.y - 5, 1, b.x, b.y, b.r);
         metal.addColorStop(0, "#ffffff");
         metal.addColorStop(.24, "#cfe4e2");
         metal.addColorStop(.68, "#71827f");
         metal.addColorStop(1, "#26312e");
         ctx.fillStyle = metal;
         ctx.beginPath();
-        ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+        ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+        ctx.fill();
+        // specular highlight
+        ctx.shadowBlur = 0;
+        ctx.globalAlpha = 0.75;
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.arc(b.x - 4, b.y - 5, 2.3, 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
       }
@@ -2165,6 +3098,247 @@
         ctx.restore();
       }
 
+      // General-illumination + insert layer. Drawn additively UNDER the drawn
+      // hardware so the whole cabinet reads as electrified: a slow breathing GI
+      // wash that flares on fever / active multiplier, plus a painted glow under
+      // every target, lane and bumper that brightens when its insert is lit.
+      function drawGI(time) {
+        const breathe = reduceMotion ? 0.5 : 0.5 + 0.5 * Math.sin(time * 0.0012);
+        const feverBoost = feverFlash * 0.5;
+        const modeBoost = state === "playing" && multiplierTimer > 0 ? 0.16 : 0;
+        const bright = 0.11 + breathe * 0.05 + feverBoost * 0.4 + modeBoost;
+
+        ctx.save();
+        ctx.globalCompositeOperation = "lighter";
+
+        const wash = ctx.createRadialGradient(300, 300, 40, 300, 340, 540);
+        wash.addColorStop(0, `rgba(70,150,120,${bright.toFixed(3)})`);
+        wash.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = wash;
+        ctx.fillRect(0, 0, W, H);
+
+        const lower = ctx.createRadialGradient(300, 770, 20, 300, 770, 320);
+        lower.addColorStop(0, `rgba(255,110,45,${(0.05 + feverBoost * 0.5).toFixed(3)})`);
+        lower.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = lower;
+        ctx.fillRect(0, 0, W, H);
+
+        const insert = (x, y, r, rgb, intensity) => {
+          const a = Math.min(0.6, 0.08 + intensity * 0.5);
+          const g = ctx.createRadialGradient(x, y, 2, x, y, r);
+          g.addColorStop(0, `rgba(${rgb},${a.toFixed(3)})`);
+          g.addColorStop(1, `rgba(${rgb},0)`);
+          ctx.fillStyle = g;
+          ctx.fillRect(x - r, y - r, r * 2, r * 2);
+        };
+        const flashPulse = id => {
+          const f = flashes.find(item => item.id === id);
+          return f ? f.life / f.max : 0;
+        };
+
+        huntTargets.forEach((t, i) => {
+          const lit = hunt.has(t.letter) ? 0.5 : 0.12;
+          insert(t.x, t.y, 46, "255,140,50", lit + flashPulse(`t${i}`) * 0.6 + breathe * 0.05);
+        });
+        dropTargets.forEach((t, i) => {
+          insert(t.x, t.y, 34, "216,170,84", (t.down ? 0.08 : 0.26) + flashPulse(`d${i}`) * 0.5);
+        });
+        rollovers.forEach((ro, i) => {
+          insert(ro.x, ro.y, 28, "85,215,232", (ro.lit ? 0.5 : 0.14) + flashPulse(`r${i}`) * 0.5);
+        });
+        standups.forEach((s, i) => {
+          insert(s.x, s.y, 24, "155,232,160", (s.lit ? 0.5 : 0.12) + flashPulse(`u${i}`) * 0.5);
+        });
+        insert(scoop.x, scoop.y, 30, "255,210,111", 0.12 + scoop.flash * 0.5);
+        bumpers.forEach((b, i) => {
+          const rgb = i === 1 ? "85,215,232" : "255,110,45";
+          insert(b.x, b.y, b.r + 22, rgb, 0.16 + flashPulse(`b${i}`) * 0.6 + feverBoost * 0.6);
+        });
+
+        ctx.restore();
+      }
+
+      function drawBonus() {
+        if (!bonusSeq) return;
+        const seq = bonusSeq;
+        ctx.save();
+        ctx.fillStyle = "rgba(2,7,6,.84)";
+        ctx.fillRect(0, 0, W, H);
+
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#ff7a32";
+        ctx.font = "900 15px Arial Narrow, sans-serif";
+        ctx.fillText("END OF BALL", 300, 296);
+        ctx.fillStyle = "#f6e8c2";
+        ctx.font = "900 46px Impact, Arial Narrow, sans-serif";
+        ctx.fillText("BONUS", 300, 342);
+
+        ctx.font = "800 15px ui-monospace, monospace";
+        let y = 400;
+        seq.items.forEach((it, i) => {
+          const revealed = i < seq.idx;
+          ctx.globalAlpha = revealed ? 1 : 0.26;
+          ctx.textAlign = "left";
+          ctx.fillStyle = "#cdd8cf";
+          ctx.fillText(`${it.label}   ${it.count} × ${it.per.toLocaleString()}`, 128, y);
+          ctx.textAlign = "right";
+          ctx.fillStyle = "#ffd9a0";
+          ctx.fillText(revealed ? it.subtotal.toLocaleString() : "—", 472, y);
+          y += 30;
+        });
+        ctx.globalAlpha = 1;
+
+        if (seq.mult > 1) {
+          ctx.textAlign = "center";
+          ctx.fillStyle = seq.phase === "lines" ? "rgba(85,215,232,.4)" : "#55d7e8";
+          ctx.font = "900 20px Impact, Arial Narrow, sans-serif";
+          ctx.fillText(`BONUS ×${seq.mult}`, 300, y + 18);
+        }
+
+        const running = seq.phase === "lines"
+          ? seq.items.slice(0, seq.idx).reduce((s, it) => s + it.subtotal, 0)
+          : seq.base + seq.paidExtra;
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#ffb34f";
+        ctx.font = "900 42px ui-monospace, monospace";
+        ctx.fillText(running.toLocaleString(), 300, y + 74);
+        ctx.restore();
+      }
+
+      // Painted guide lanes: a top orbit, a left return habitrail, and a spiral
+      // around the BUCK bumper. Cosmetic lanes that read the shots the orbit /
+      // loop detectors reward — drawn under the hardware like the shooter lane.
+      function drawTracks() {
+        ctx.save();
+        ctx.lineCap = "round";
+        ctx.setLineDash([4, 9]);
+        const glow = 0.16 + lanePulse * 0.4;
+
+        // Top orbit lane, hugging the inside of the upper wall.
+        ctx.strokeStyle = `rgba(85,215,232,${glow.toFixed(3)})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(120, 96);
+        ctx.quadraticCurveTo(300, 74, 470, 92);
+        ctx.stroke();
+
+        // Left return habitrail from the top-left orbit down to the left inlane.
+        ctx.strokeStyle = `rgba(216,170,84,${(0.12 + lanePulse * 0.3).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.moveTo(96, 120);
+        ctx.quadraticCurveTo(70, 430, 120, 700);
+        ctx.stroke();
+
+        // Spiral lane around the BUCK bumper.
+        ctx.strokeStyle = "rgba(255,122,50,.13)";
+        ctx.beginPath();
+        ctx.arc(276, 452, 74, -Math.PI * 0.85, Math.PI * 0.55);
+        ctx.stroke();
+
+        ctx.restore();
+      }
+
+      function drawRamp() {
+        const pts = [];
+        for (let i = 0; i <= 26; i++) pts.push(rampPos(i / 26));
+        const stroke = (color, width) => {
+          ctx.strokeStyle = color;
+          ctx.lineWidth = width;
+          ctx.beginPath();
+          ctx.moveTo(pts[0].x, pts[0].y);
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+          ctx.stroke();
+        };
+        ctx.save();
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        // drop shadow to sell the elevation
+        ctx.save();
+        ctx.translate(3, 7);
+        stroke("rgba(0,0,0,.32)", 11);
+        ctx.restore();
+        // dark backing then metallic rail
+        stroke("rgba(4,9,8,.9)", 13);
+        const lit = RAMP.flash > 0;
+        if (lit) {
+          ctx.shadowColor = "#ffd27a";
+          ctx.shadowBlur = 16;
+        }
+        stroke(lit ? "#ffe6b0" : "#9aa7a0", 5);
+        ctx.shadowBlur = 0;
+        stroke("rgba(238,244,230,.55)", 1.5);
+        // entrance mouth marker
+        ctx.translate(RAMP.p0.x, RAMP.p0.y);
+        ctx.fillStyle = `rgba(255,210,111,${(0.4 + RAMP.flash * 0.5).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.moveTo(0, -4);
+        ctx.lineTo(-7, 9);
+        ctx.lineTo(7, 9);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = "#ffd26f";
+        ctx.textAlign = "center";
+        ctx.font = "900 8px ui-monospace, monospace";
+        ctx.fillText("RAMP", 0, 22);
+        ctx.restore();
+      }
+
+      function drawScoop() {
+        ctx.save();
+        ctx.translate(scoop.x, scoop.y);
+        if (scoop.flash > 0) {
+          ctx.shadowColor = "#ffd26f";
+          ctx.shadowBlur = 6 + scoop.flash * 22;
+        }
+        // dark hole
+        const hole = ctx.createRadialGradient(0, 0, 1, 0, 0, scoop.r);
+        hole.addColorStop(0, "#000");
+        hole.addColorStop(1, "#0c1a16");
+        ctx.fillStyle = hole;
+        ctx.beginPath();
+        ctx.arc(0, 0, scoop.r, 0, Math.PI * 2);
+        ctx.fill();
+        // lit rim
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = `rgba(255,210,111,${(0.5 + scoop.flash * 0.5).toFixed(3)})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(0, 0, scoop.r, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = "#ffd26f";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.font = "900 8px ui-monospace, monospace";
+        ctx.fillText("DEN", 0, scoop.r + 8);
+        ctx.restore();
+      }
+
+      function drawStandups() {
+        standups.forEach((standup, index) => {
+          const flash = flashes.find(f => f.id === `u${index}`);
+          ctx.save();
+          ctx.translate(standup.x, standup.y);
+          if (standup.lit || flash) {
+            ctx.shadowColor = "#9be8a0";
+            ctx.shadowBlur = flash ? 18 : 10;
+          }
+          ctx.fillStyle = standup.lit ? "#bdf3c1" : "#20302a";
+          ctx.strokeStyle = standup.lit ? "#9be8a0" : "rgba(222,230,216,.5)";
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.arc(0, 0, standup.r, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = standup.lit ? "#0b2018" : "#aebcb4";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.font = "900 11px ui-monospace, monospace";
+          ctx.fillText(standup.letter, 0, 1);
+          ctx.restore();
+        });
+      }
+
       function draw(time) {
         resizeCanvas();
         const sx = canvas.width / W;
@@ -2176,10 +3350,16 @@
         ctx.save();
         ctx.translate(shakeX, shakeY);
         drawBackground();
+        drawGI(time);
+        drawTracks();
         drawTopper();
+        drawDMD(time);
         drawHuntTargets();
         bumpers.forEach((bumper, index) => drawBumper(bumper, index, time));
         drawPinballHardware();
+        drawStandups();
+        drawScoop();
+        drawRamp();
         drawSlings();
         posts.forEach(post => {
           ctx.fillStyle = "#d3dfd9";
@@ -2192,10 +3372,13 @@
         });
         drawFlipper(flippers.left);
         drawFlipper(flippers.right);
+        drawFlipper(flippers.upper);
         drawPlunger();
         drawBall();
         drawEffects();
         ctx.restore();
+
+        drawBonus();
 
         if (paused && state === "playing") {
           ctx.fillStyle = "rgba(2,7,6,.72)";
@@ -2225,9 +3408,11 @@
         } else {
           updateFlipper(flippers.left, rawDt || STEP);
           updateFlipper(flippers.right, rawDt || STEP);
+          updateFlipper(flippers.upper, rawDt || STEP);
           updateEffects(rawDt);
         }
 
+        updateMusic();
         updateDiagnostics();
         draw(time);
         requestAnimationFrame(frame);
