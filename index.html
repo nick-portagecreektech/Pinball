@@ -468,6 +468,7 @@
     }
 
     .launch-meter {
+      position: relative;
       width: 72%;
       height: 5px;
       overflow: hidden;
@@ -475,6 +476,21 @@
       border-radius: 3px;
       background: rgba(255,255,255,.13);
     }
+
+    .launch-meter-band {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 60%;
+      width: 18%;
+      background: rgba(85,215,232,.5);
+      box-shadow: 0 0 7px rgba(85,215,232,.85);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .15s ease;
+    }
+
+    .launch-meter-band.show { opacity: 1; }
 
     .launch-meter-fill {
       width: 0%;
@@ -726,7 +742,7 @@
       <button class="control launch" id="launchButton" type="button" aria-label="Hold to charge the plunger">
         <span class="control-label">Plunger</span>
         <span class="control-key" id="launchStatus">Ready • Space</span>
-        <span class="launch-meter" aria-hidden="true"><span class="launch-meter-fill" id="launchMeter"></span></span>
+        <span class="launch-meter" aria-hidden="true"><span class="launch-meter-fill" id="launchMeter"></span><span class="launch-meter-band" id="launchBand"></span></span>
       </button>
       <button class="control flipper" id="rightButton" type="button" aria-label="Right flipper">
         <span class="control-arrow" aria-hidden="true">▶</span>
@@ -771,6 +787,7 @@
       const overlayCopy = document.getElementById("overlayCopy");
       const startButton = document.getElementById("startButton");
       const launchMeter = document.getElementById("launchMeter");
+      const launchBand = document.getElementById("launchBand");
       const launchStatus = document.getElementById("launchStatus");
       const soundButton = document.getElementById("soundButton");
       const soundIcon = document.getElementById("soundIcon");
@@ -865,6 +882,8 @@
       let bumperHits = 0;
       let bonusMultiplier = 1;
       let bonusSeq = null;
+      let skillShotArmed = false;
+      const SKILL_BAND = [0.60, 0.78];
 
       bestEl.textContent = formatScore(best);
 
@@ -957,6 +976,7 @@
         bumperHits = 0;
         bonusMultiplier = 1;
         bonusSeq = null;
+        skillShotArmed = false;
         hunt.clear();
         dropTargets.forEach(target => { target.down = false; });
         rollovers.forEach(rollover => { rollover.lit = false; });
@@ -992,6 +1012,7 @@
           restTime: 0,
           flipperLock: 0
         };
+        skillShotArmed = true;
         settleBallOnPlunger(false);
         resetTimer = 0;
         bumperHits = 0;
@@ -1004,7 +1025,7 @@
         launchButton.classList.toggle("is-ready", ready);
         launchButton.classList.toggle("is-charging", chargingNow);
         launchStatus.textContent = {
-          ready: "Ready • Space",
+          ready: skillShotArmed ? "Skill Shot • Space" : "Ready • Space",
           charging: "Pulling…",
           returning: "Ball returning",
           inplay: "Return lane"
@@ -1030,11 +1051,39 @@
         launchButton.classList.remove("is-down");
         launchMeter.style.width = "0%";
         setPlungerState("ready");
+        updateSkillShotUI();
         if (returning) {
           lanePulse = Math.max(lanePulse, .65);
           plungerFlash = 1;
           hitSound("plunger-return");
         }
+      }
+
+      // The skill shot is a decision at ball start: land the charge inside the
+      // lit band, or send the ball cleanly through a U-P lane before it touches
+      // anything. Either one collects the skill bonus.
+      function updateSkillShotUI() {
+        const ready = Boolean(skillShotArmed && ball && ball.inLane && !ball.launched);
+        launchBand.classList.toggle("show", ready);
+        if (ready) {
+          launchBand.style.left = `${SKILL_BAND[0] * 100}%`;
+          launchBand.style.width = `${(SKILL_BAND[1] - SKILL_BAND[0]) * 100}%`;
+        }
+      }
+
+      function disarmSkillShot() {
+        if (!skillShotArmed) return;
+        skillShotArmed = false;
+        updateSkillShotUI();
+      }
+
+      function awardSkillShot(label, points, x, y) {
+        skillShotArmed = false;
+        score += points;
+        if (score > best) best = score;
+        announceBonus(`${label} +${points.toLocaleString()}`, x, y, "#55d7e8");
+        updateSkillShotUI();
+        updateHud();
       }
 
       function drainBall() {
@@ -1215,6 +1264,10 @@
           lanePulse = 1;
           plungerFlash = 1;
           setPlungerState("inplay");
+          if (skillShotArmed && charge >= SKILL_BAND[0] && charge <= SKILL_BAND[1]) {
+            awardSkillShot("PERFECT PLUNGE", 6000, 300, 720);
+          }
+          updateSkillShotUI();
         } else if (ball?.inLane && !ball.launched) {
           setPlungerState("ready");
         }
@@ -1395,6 +1448,8 @@
         const dist2 = dx * dx + dy * dy;
         if (dist2 >= minDist * minDist) return false;
 
+        disarmSkillShot();
+
         // The underside is intentionally non-trapping. A ball that reaches the
         // apron passes toward the drain instead of being pinched behind a bat.
         if (ball.y > point.y + 4) {
@@ -1515,6 +1570,7 @@
           );
           if (collided && canFire) {
             sling.cooldown = .22;
+            disarmSkillShot();
             flashes.push({ id: `s${index}`, x: (sling.x1 + sling.x2) / 2, y: (sling.y1 + sling.y2) / 2, life: .28, max: .28 });
             addScore(350, (sling.x1 + sling.x2) / 2, (sling.y1 + sling.y2) / 2, "+350");
             burst(ball.x, ball.y, "#ff5a1f", 7);
@@ -1527,6 +1583,7 @@
             if (!flashes.some(f => f.id === `b${index}` && f.life > .12)) {
               flashes.push({ id: `b${index}`, x: bumper.x, y: bumper.y, life: .34, max: .34 });
               bumperHits += 1;
+              disarmSkillShot();
               addScore(750, bumper.x, bumper.y - bumper.r, "+750");
               burst(bumper.x, bumper.y, index === 1 ? "#55d7e8" : "#ff7a32", 12);
               hitSound("bumper");
@@ -1539,6 +1596,7 @@
         huntTargets.forEach((target, index) => {
           if (collideCircle(target, .5, 70) && !hunt.has(target.letter)) {
             hunt.add(target.letter);
+            disarmSkillShot();
             addScore(2500, target.x, target.y - 25, `${target.letter} +2,500`);
             flashes.push({ id: `t${index}`, x: target.x, y: target.y, life: .5, max: .5 });
             burst(target.x, target.y, "#ffe7a6", 14);
@@ -1561,6 +1619,7 @@
         dropTargets.forEach((target, index) => {
           if (!target.down && collideCircle(target, .42, 55)) {
             target.down = true;
+            disarmSkillShot();
             addScore(1000, target.x, target.y - 24, `${target.letter} +1,000`);
             flashes.push({ id: `d${index}`, x: target.x, y: target.y, life: .4, max: .4 });
             burst(target.x, target.y, "#d8aa54", 8);
@@ -1583,6 +1642,7 @@
             addScore(500, rollover.x, rollover.y - 18, `${rollover.letter} +500`);
             flashes.push({ id: `r${index}`, x: rollover.x, y: rollover.y, life: .45, max: .45 });
             tone(620 + index * 140, .08, "triangle", .035);
+            if (skillShotArmed) awardSkillShot("SKILL SHOT", 9000, rollover.x, rollover.y - 30);
             if (rollovers.every(item => item.lit)) {
               addScore(3000, 445, 190, "U.P. +3,000");
               activateMultiplier(2, 12, "YOOPER 2X • 12s", 445, 170);
@@ -1595,6 +1655,7 @@
         if (collideCircle(spinner, .35, 35) && spinner.cooldown <= 0) {
           spinner.spin = Math.sign(ball.vx || 1) * (12 + Math.min(12, Math.hypot(ball.vx, ball.vy) / 65));
           spinner.cooldown = .2;
+          disarmSkillShot();
           addScore(250, spinner.x, spinner.y - 28, "+250");
           flashes.push({ id: "spinner", x: spinner.x, y: spinner.y, life: .3, max: .3 });
           tone(880, .045, "square", .022);
