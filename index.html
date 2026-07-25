@@ -922,6 +922,16 @@
       let jackpotLit = false;
       let jackpotsCollected = 0;
       let superJackpotReady = false;
+      const MODES = [
+        { name: "DAWN WATCH", goal: 5, reward: 30000, hint: "BUCK ×5", type: "buck" },
+        { name: "BLIZZARD", goal: 12, reward: 30000, hint: "BUMPERS ×12", type: "bumper" },
+        { name: "FREEZER RUN", goal: 2, reward: 40000, hint: "CAMP BANK ×2", type: "camp" }
+      ];
+      let modeActive = null;
+      let modeTimer = 0;
+      let modeProgress = 0;
+      let modeIndex = 0;
+      const modesDone = new Set();
 
       bestEl.textContent = formatScore(best);
 
@@ -952,6 +962,7 @@
         bestEl.textContent = formatScore(best);
         huntEls.forEach(el => el.classList.toggle("lit", hunt.has(el.dataset.letter)));
         const bonuses = [];
+        if (modeActive) bonuses.push(`${modeActive.name} ${modeProgress}/${modeActive.goal} ${Math.ceil(modeTimer)}s`);
         if (multiball) {
           bonuses.push("MULTIBALL");
           if (superJackpotReady) bonuses.push("SUPER JP");
@@ -1058,6 +1069,11 @@
         jackpotLit = false;
         jackpotsCollected = 0;
         superJackpotReady = false;
+        modeActive = null;
+        modeTimer = 0;
+        modeProgress = 0;
+        modeIndex = 0;
+        modesDone.clear();
         hunt.clear();
         dropTargets.forEach(target => { target.down = false; });
         rollovers.forEach(rollover => { rollover.lit = false; });
@@ -1358,6 +1374,52 @@
           if (multiplier < scoreMultiplier) announcement = `${scoreMultiplier}X EXTENDED`;
         }
         announceBonus(announcement, x, y, multiplier === 3 ? "#ff7a32" : "#55d7e8");
+        updateHud();
+      }
+
+      // Timed missions started by completing HUNT. Each has a 30s objective and
+      // a reward; finishing all three arms the wizard mode.
+      function startMode() {
+        if (modeActive) return;
+        modeActive = MODES[modeIndex % MODES.length];
+        modeIndex += 1;
+        modeTimer = 30;
+        modeProgress = 0;
+        announceBonus(`${modeActive.name} — ${modeActive.hint}`, 300, 250, "#9be8a0");
+        updateHud();
+      }
+
+      function startWizard() {
+        // Fleshed out into the full 6-ball wizard mode in a later commit.
+        addScore(50000, 300, 320, "OPENING DAY!");
+        announceBonus("OPENING DAY!", 300, 300, "#ff7a32");
+        modesDone.clear();
+      }
+
+      function modeEvent(type) {
+        if (!modeActive || modeActive.type !== type) return;
+        modeProgress += 1;
+        floaters.push({ x: 300, y: 240, text: `${modeActive.name} ${modeProgress}/${modeActive.goal}`, life: 0.9, max: 0.9 });
+        if (modeProgress >= modeActive.goal) completeMode();
+        else updateHud();
+      }
+
+      function completeMode() {
+        const done = modeActive;
+        modesDone.add(done.name);
+        addScore(done.reward, 300, 300, `${done.name} COMPLETE`);
+        announceBonus(`${done.name} COMPLETE`, 300, 280, "#ffd26f");
+        feverFlash = Math.max(feverFlash, 0.5);
+        modeActive = null;
+        modeTimer = 0;
+        updateHud();
+        if (modesDone.size >= MODES.length) startWizard();
+      }
+
+      function failMode() {
+        floaters.push({ x: 300, y: 260, text: `${modeActive.name} OVER`, life: 1.1, max: 1.1 });
+        modeActive = null;
+        modeTimer = 0;
         updateHud();
       }
 
@@ -1866,6 +1928,8 @@
               burst(bumper.x, bumper.y, index === 1 ? "#55d7e8" : "#ff7a32", 12);
               hitSound("bumper");
               registerCombo(bumper.x, bumper.y);
+              modeEvent("bumper");
+              if (index === 2) modeEvent("buck");
               shake = Math.max(shake, 2.5);
               navigator.vibrate?.(12);
             }
@@ -1918,6 +1982,7 @@
               feverFlash = 1;
               shake = 9;
               hitSound("fever");
+              startMode();
               setTimeout(() => {
                 hunt.clear();
                 updateHud();
@@ -1940,6 +2005,7 @@
             if (dropTargets.every(item => item.down)) {
               addScore(5000, 260, 510, "CAMP +5,000");
               armTrailSave();
+              modeEvent("camp");
               dropResetTimer = 1.4;
               hitSound("fever");
             }
@@ -2259,6 +2325,12 @@
 
         orbitCooldown = Math.max(0, orbitCooldown - dt);
         tiltMeter = Math.max(0, tiltMeter - dt * 0.7);
+        if (modeActive && state === "playing" && !paused) {
+          const prev = Math.ceil(modeTimer);
+          modeTimer = Math.max(0, modeTimer - dt);
+          if (modeTimer <= 0) failMode();
+          else if (Math.ceil(modeTimer) !== prev) updateHud();
+        }
         scoop.cooldown = Math.max(0, scoop.cooldown - dt);
         scoop.flash = Math.max(0, scoop.flash - dt * 2);
       }
