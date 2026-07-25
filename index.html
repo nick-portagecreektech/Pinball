@@ -915,6 +915,9 @@
       let magSaveArmed = false;
       let lastMotionNudge = 0;
       let musicNodes = null;
+      let multiball = false;
+      let lockCount = 0;
+      let lockedBall = null;
 
       bestEl.textContent = formatScore(best);
 
@@ -945,6 +948,8 @@
         bestEl.textContent = formatScore(best);
         huntEls.forEach(el => el.classList.toggle("lit", hunt.has(el.dataset.letter)));
         const bonuses = [];
+        if (multiball) bonuses.push("MULTIBALL");
+        else if (lockCount > 0) bonuses.push("BALL LOCKED");
         if (multiplierTimer > 0) bonuses.push(`${scoreMultiplier}X ${Math.ceil(multiplierTimer)}s`);
         if (bonusMultiplier > 1) bonuses.push(`B×${bonusMultiplier}${holdBonus ? " HOLD" : ""}`);
         if (ballSaveArmed) bonuses.push("SAVE");
@@ -1039,6 +1044,9 @@
         tiltMeter = 0;
         tilted = false;
         magSaveArmed = false;
+        multiball = false;
+        lockCount = 0;
+        lockedBall = null;
         hunt.clear();
         dropTargets.forEach(target => { target.down = false; });
         rollovers.forEach(rollover => { rollover.lit = false; });
@@ -1080,6 +1088,9 @@
           loopA: null,
           loopAccum: 0,
           held: 0,
+          holdX: 0,
+          holdY: 0,
+          locked: false,
           dead: false,
           ...props
         };
@@ -1088,6 +1099,9 @@
       function spawnBall() {
         ball = makeBall({ inLane: true, launched: false });
         ballList = [ball];
+        multiball = false;
+        lockCount = 0;
+        lockedBall = null;
         skillShotArmed = true;
         // Bonus multiplier resets each ball unless a HOLD BONUS was earned.
         if (holdBonus) holdBonus = false;
@@ -1777,17 +1791,19 @@
           return;
         }
 
-        if (ball.held > 0) {
-          ball.held -= dt;
-          ball.x = scoop.x;
-          ball.y = scoop.y;
+        if (ball.held > 0 || ball.locked) {
+          ball.x = ball.holdX;
+          ball.y = ball.holdY;
           ball.vx = 0;
           ball.vy = 0;
           ball.trail.length = 0;
           scoop.flash = Math.max(scoop.flash, 0.6);
-          if (ball.held <= 0) {
-            ball.held = 0;
-            ejectFromScoop();
+          if (!ball.locked) {
+            ball.held -= dt;
+            if (ball.held <= 0) {
+              ball.held = 0;
+              ejectFromScoop();
+            }
           }
           return;
         }
@@ -2028,30 +2044,84 @@
       }
 
       function captureScoop() {
-        ball.held = 1.0;
+        disarmSkillShot();
+        scoop.flash = 1;
+        burst(scoop.x, scoop.y, "#ffd26f", 14);
+        // Park the ball in the saucer.
         ball.holdX = scoop.x;
         ball.holdY = scoop.y;
         ball.x = scoop.x;
         ball.y = scoop.y;
         ball.vx = 0;
         ball.vy = 0;
-        disarmSkillShot();
-        scoop.flash = 1;
-        addScore(2500, scoop.x, scoop.y - 26, "SCOOP +2,500");
-        burst(scoop.x, scoop.y, "#ffd26f", 14);
-        hitSound("bonus");
-        shake = Math.max(shake, 3);
+
+        if (multiball) {
+          // During multiball the scoop is a quick relight + eject.
+          ball.held = 0.6;
+          addScore(2500, scoop.x, scoop.y - 26, "SCOOP +2,500");
+          hitSound("bonus");
+          return;
+        }
+
+        if (lockCount === 0) {
+          // First capture locks the ball and kicks a fresh ball into play.
+          ball.held = 0;
+          ball.locked = true;
+          lockedBall = ball;
+          lockCount = 1;
+          addScore(3000, scoop.x, scoop.y - 26, "BALL LOCKED");
+          announceBonus("BALL LOCKED", scoop.x, scoop.y - 42, "#ffd26f");
+          addBall();
+          return;
+        }
+
+        // Second capture starts multiball.
+        startMultiball();
       }
 
-      function ejectFromScoop() {
-        ball.y = scoop.y - (scoop.r + ball.r + 2);
-        ball.vy = -560;
-        ball.vx = 150;
-        ball.inLane = false;
-        ball.launched = true;
+      function ejectFromScoop(b = ball) {
+        b.y = scoop.y - (scoop.r + b.r + 2);
+        b.vy = -560;
+        b.vx = 150;
+        b.inLane = false;
+        b.launched = true;
+        b.held = 0;
+        b.locked = false;
         scoop.cooldown = 0.5;
         lanePulse = Math.max(lanePulse, 0.6);
         hitSound("launch");
+      }
+
+      function startMultiball() {
+        multiball = true;
+        lockCount = 0;
+        scoop.flash = 1;
+        const locked = lockedBall;
+        lockedBall = null;
+        if (locked && locked !== ball) {
+          locked.locked = false;
+          locked.held = 0;
+          locked.x = scoop.x - 18;
+          locked.y = scoop.y - (scoop.r + locked.r + 4);
+          locked.vx = -150;
+          locked.vy = -540;
+          locked.inLane = false;
+          locked.launched = true;
+        }
+        ball.locked = false;
+        ball.held = 0;
+        ball.x = scoop.x + 18;
+        ball.y = scoop.y - (scoop.r + ball.r + 4);
+        ball.vx = 150;
+        ball.vy = -540;
+        ball.inLane = false;
+        ball.launched = true;
+        scoop.cooldown = 0.6;
+        announceBonus("MULTIBALL!", 300, 300, "#55d7e8");
+        lanePulse = 1;
+        shake = 8;
+        hitSound("fever");
+        updateHud();
       }
 
       // A ball left the playfield. During multiball just remove it; on the last
@@ -2062,6 +2132,27 @@
           tone(200, 0.14, "sawtooth", 0.022);
           shake = Math.max(shake, 3);
           floaters.push({ x: ball.x, y: Math.min(ball.y, 840) - 20, text: "BALL LOST", life: 1, max: 1 });
+          if (activeBallCount() <= 1) {
+            multiball = false;
+            // If the only survivor is a locked ball, release it so play continues.
+            const last = ballList.find(b => !b.dead);
+            if (last && last.locked) {
+              last.locked = false;
+              last.held = 0;
+              last.x = scoop.x;
+              last.y = scoop.y - (scoop.r + last.r + 3);
+              last.vx = 120;
+              last.vy = -520;
+              last.inLane = false;
+              last.launched = true;
+              lockedBall = null;
+              lockCount = 0;
+              scoop.cooldown = 0.5;
+              floaters.push({ x: scoop.x, y: scoop.y - 30, text: "LOCK RELEASED", life: 1.2, max: 1.2 });
+            } else {
+              floaters.push({ x: 300, y: 300, text: "SINGLE BALL", life: 1.1, max: 1.1 });
+            }
+          }
           return;
         }
         drainBall();
