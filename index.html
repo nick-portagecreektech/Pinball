@@ -904,6 +904,11 @@
       let standupResetTimer = 0;
       let superPlungeArmed = false;
       let orbitCooldown = 0;
+      let tiltMeter = 0;
+      let tilted = false;
+      let magSaveArmed = false;
+      let lastMotionNudge = 0;
+      let musicNodes = null;
 
       bestEl.textContent = formatScore(best);
 
@@ -937,6 +942,7 @@
         if (multiplierTimer > 0) bonuses.push(`${scoreMultiplier}X ${Math.ceil(multiplierTimer)}s`);
         if (bonusMultiplier > 1) bonuses.push(`B×${bonusMultiplier}${holdBonus ? " HOLD" : ""}`);
         if (ballSaveArmed) bonuses.push("SAVE");
+        if (magSaveArmed) bonuses.push("MAGSAVE");
         bonusStatus.textContent = bonuses.join(" • ") || "Bonus";
         bonusStatus.classList.toggle("active", bonuses.length > 0);
       }
@@ -1023,6 +1029,9 @@
         comboTimer = 0;
         standupResetTimer = 0;
         superPlungeArmed = false;
+        tiltMeter = 0;
+        tilted = false;
+        magSaveArmed = false;
         hunt.clear();
         dropTargets.forEach(target => { target.down = false; });
         rollovers.forEach(rollover => { rollover.lit = false; });
@@ -1043,6 +1052,7 @@
         overlay.classList.remove("visible");
         spawnBall();
         updateHud();
+        startMusic();
         canvas.focus({ preventScroll: true });
       }
 
@@ -1068,6 +1078,8 @@
         settleBallOnPlunger(false);
         resetTimer = 0;
         bumperHits = 0;
+        tiltMeter = 0;
+        tilted = false;
       }
 
       function setPlungerState(nextState) {
@@ -1310,6 +1322,83 @@
         }
       }
 
+      // Nudge: a small one-shot shove of the ball in play. Each nudge feeds the
+      // tilt meter — nudge too hard, too fast, and the table TILTs (ball lost,
+      // no save, no bonus).
+      function nudgeBall(dx, dy) {
+        if (state !== "playing" || paused || tilted) return;
+        if (ball && !ball.inLane) {
+          ball.vx += dx;
+          ball.vy += dy;
+        }
+        shake = Math.max(shake, 2.5);
+        registerTilt();
+      }
+
+      function registerTilt() {
+        tiltMeter += 1;
+        if (tiltMeter >= 3) {
+          doTilt();
+        } else if (tiltMeter >= 2) {
+          floaters.push({ x: 300, y: 300, text: "TILT WARNING", life: 1.1, max: 1.1 });
+          tone(160, 0.14, "square", 0.035);
+        }
+      }
+
+      function doTilt() {
+        if (tilted || !ball) return;
+        tilted = true;
+        magSaveArmed = false;
+        ballSaveArmed = false;
+        floaters.push({ x: 300, y: 320, text: "TILT", life: 1.8, max: 1.8 });
+        shake = 12;
+        tone(120, 0.5, "sawtooth", 0.05);
+        hitSound("drain");
+        balls -= 1;
+        ball = null;
+        setPlungerState("inplay");
+        resetTimer = 1.3;
+        updateHud();
+      }
+
+      function armMagSave() {
+        magSaveArmed = true;
+        announceBonus("MAG SAVE ARMED", 300, 360, "#55d7e8");
+        updateHud();
+      }
+
+      function startMusic() {
+        ensureAudio();
+        if (!audioContext || musicNodes) return;
+        const osc = audioContext.createOscillator();
+        const osc2 = audioContext.createOscillator();
+        const filter = audioContext.createBiquadFilter();
+        const gain = audioContext.createGain();
+        osc.type = "sawtooth";
+        osc.frequency.value = 55;
+        osc2.type = "sine";
+        osc2.frequency.value = 82.41;
+        filter.type = "lowpass";
+        filter.frequency.value = 360;
+        gain.gain.value = 0;
+        osc.connect(filter);
+        osc2.connect(filter);
+        filter.connect(gain).connect(audioContext.destination);
+        osc.start();
+        osc2.start();
+        musicNodes = { osc, osc2, filter, gain };
+      }
+
+      function updateMusic() {
+        if (!musicNodes || !audioContext) return;
+        const speed = ball ? Math.hypot(ball.vx, ball.vy) : 0;
+        const active = !muted && state === "playing" && !paused;
+        const target = active ? 0.006 + Math.min(0.02, speed / MAX_SPEED * 0.02) : 0;
+        const now = audioContext.currentTime;
+        musicNodes.gain.gain.setTargetAtTime(target, now, 0.2);
+        musicNodes.filter.frequency.setTargetAtTime(320 + Math.min(560, speed * 0.55), now, 0.3);
+      }
+
       function startCharge() {
         if (state !== "playing" || !ball || !ball.inLane || ball.launched || ball.y < 720) return;
         ensureAudio();
@@ -1377,6 +1466,15 @@
       const rightKeys = new Set(["Slash", "KeyL", "ArrowRight"]);
 
       window.addEventListener("keydown", event => {
+        if (event.shiftKey && (event.code === "ArrowLeft" || event.code === "ArrowRight" || event.code === "ArrowUp")) {
+          event.preventDefault();
+          if (!event.repeat) {
+            if (event.code === "ArrowLeft") nudgeBall(-44, -12);
+            else if (event.code === "ArrowRight") nudgeBall(44, -12);
+            else nudgeBall(0, -46);
+          }
+          return;
+        }
         if (leftKeys.has(event.code)) {
           event.preventDefault();
           if (!event.repeat) setFlipper("left", true);
@@ -1405,6 +1503,18 @@
         setFlipper("right", false);
         releaseLaunch();
       });
+
+      // Mobile: a hard shake of the device registers as a nudge toward tilt.
+      window.addEventListener("devicemotion", event => {
+        if (state !== "playing" || paused || !ball || ball.inLane) return;
+        const a = event.accelerationIncludingGravity;
+        if (!a) return;
+        const mag = Math.hypot(a.x || 0, a.y || 0, a.z || 0);
+        if (mag > 28 && introTime - lastMotionNudge > 0.7) {
+          lastMotionNudge = introTime;
+          nudgeBall(Math.sign(a.x || 1) * 30, -20);
+        }
+      }, { passive: true });
 
       startButton.addEventListener("click", newGame);
       soundButton.addEventListener("click", () => {
@@ -1677,6 +1787,7 @@
             navigator.vibrate?.(8);
             if (standups.every(s => s.lit)) {
               addScore(3000, 300, 320, "STANDUPS +3,000");
+              if (!magSaveArmed) armMagSave();
               standupResetTimer = 1.2;
               hitSound("fever");
             }
@@ -1692,6 +1803,7 @@
             burst(target.x, target.y, "#ffe7a6", 14);
             hitSound("target");
             registerCombo(target.x, target.y);
+            navigator.vibrate?.(10);
             if (hunt.size === 4) {
               huntCycles += 1;
               const mult = [3, 5, 6][Math.min(huntCycles - 1, 2)];
@@ -1720,6 +1832,7 @@
             burst(target.x, target.y, "#d8aa54", 8);
             hitSound("target");
             registerCombo(target.x, target.y);
+            navigator.vibrate?.(10);
             if (dropTargets.every(item => item.down)) {
               addScore(5000, 260, 510, "CAMP +5,000");
               armTrailSave();
@@ -1739,6 +1852,7 @@
             flashes.push({ id: `r${index}`, x: rollover.x, y: rollover.y, life: .45, max: .45 });
             tone(620 + index * 140, .08, "triangle", .035);
             registerCombo(rollover.x, rollover.y);
+            navigator.vibrate?.(8);
             if (skillShotArmed) awardSkillShot("SKILL SHOT", 9000, rollover.x, rollover.y - 30);
             if (rollovers.every(item => item.lit)) {
               addScore(3000, 445, 190, "U.P. +3,000");
@@ -1814,6 +1928,20 @@
           setPlungerState("inplay");
         }
 
+        // Magnetic save: catch a ball sinking down an outlane and kick it back in.
+        if (magSaveArmed && !ball.inLane && ball.vy > 0 && ball.y > 775 && ball.y < 852 &&
+            (ball.x < 150 || (ball.x > 400 && ball.x < 505))) {
+          magSaveArmed = false;
+          ball.vy = -320;
+          ball.vx += Math.sign(300 - ball.x) * 190;
+          lanePulse = 1;
+          shake = 4;
+          floaters.push({ x: ball.x, y: ball.y - 20, text: "MAG SAVE!", life: 1.4, max: 1.4 });
+          burst(ball.x, ball.y, "#55d7e8", 12);
+          hitSound("save");
+          updateHud();
+        }
+
         if (ball.y > 880 || ball.x < -40 || ball.x > W + 40) drainBall();
 
         if (ball) {
@@ -1879,6 +2007,7 @@
         }
 
         orbitCooldown = Math.max(0, orbitCooldown - dt);
+        tiltMeter = Math.max(0, tiltMeter - dt * 0.7);
       }
 
       function roundedRect(context, x, y, width, height, radius) {
@@ -2676,6 +2805,7 @@
           updateEffects(rawDt);
         }
 
+        updateMusic();
         updateDiagnostics();
         draw(time);
         requestAnimationFrame(frame);
