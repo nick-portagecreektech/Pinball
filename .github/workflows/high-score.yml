@@ -1,0 +1,65 @@
+name: Add high score
+
+# When a player opens a "Score: NAME 1,234,567" issue (the link the game
+# generates), fold their entry into scores.json, commit it, and close the issue.
+on:
+  issues:
+    types: [opened, reopened]
+
+permissions:
+  contents: write
+  issues: write
+
+# Serialize writes so concurrent submissions can't clobber scores.json.
+concurrency:
+  group: high-score-write
+  cancel-in-progress: false
+
+jobs:
+  add-score:
+    if: "startsWith(github.event.issue.title, 'Score:')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Parse and apply score
+        id: apply
+        env:
+          # untrusted input — passed via env, never interpolated into a shell
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: node .github/scripts/add-score.mjs
+
+      - name: Commit updated scores
+        if: "steps.apply.outputs.changed == 'true'"
+        env:
+          ENTRY: ${{ steps.apply.outputs.entry }}
+        run: |
+          git config user.name "buck-fever-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scores.json
+          git commit -m "High score: $ENTRY"
+          git push
+
+      - name: Reply and close
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ github.event.issue.number }}
+          CHANGED: ${{ steps.apply.outputs.changed }}
+          ERROR: ${{ steps.apply.outputs.error }}
+          ENTRY: ${{ steps.apply.outputs.entry }}
+          RANK: ${{ steps.apply.outputs.rank }}
+        run: |
+          if [ "$CHANGED" = "true" ]; then
+            gh issue comment "$NUMBER" --body "Added **$ENTRY** to the Camp Leaderboard at #$RANK. 🦌"
+            gh issue close "$NUMBER"
+          elif [ -n "$ERROR" ]; then
+            gh issue comment "$NUMBER" --body "Couldn't add that score: $ERROR"
+          else
+            gh issue comment "$NUMBER" --body "$ENTRY didn't crack the top 10 — get back out there."
+            gh issue close "$NUMBER"
+          fi
