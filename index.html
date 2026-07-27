@@ -2904,6 +2904,7 @@
         ctx.lineTo(478, 57);
         ctx.lineTo(139, 57);
         ctx.lineTo(96, 80);
+        ctx.lineTo(56, 132);   // close the top-left corner (this wall collides but was never painted)
         ctx.stroke();
         ctx.strokeStyle = "rgba(228,224,201,.48)";
         ctx.lineWidth = 4;
@@ -3749,7 +3750,7 @@
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.font = "900 8px ui-monospace, monospace";
-        ctx.fillText("DEN", 0, scoop.r + 8);
+        ctx.fillText("BLIND", 0, scoop.r + 8);
         ctx.restore();
       }
 
