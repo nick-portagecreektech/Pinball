@@ -909,13 +909,39 @@
         { x: 466, y: 244, r: 8, letter: "P", lit: false }
       ];
 
-      // Standup targets: always-physical little bumper-posts flanking the pop
-      // bumpers. Hitting one lights it; lighting all three pays a bonus and
-      // relights them for another lap.
+      // Classic top lane bank: the orbit feeds the ball through T-A-G at the top
+      // of the playfield. Flipper buttons rotate which lane is lit (lane change);
+      // completing all three advances the bonus multiplier and relights them.
+      const topLanes = [
+        { x: 184, y: 97, r: 11, letter: "T", lit: false },
+        { x: 262, y: 92, r: 11, letter: "A", lit: false },
+        { x: 341, y: 95, r: 11, letter: "G", lit: false }
+      ];
+
+      // Return-lane rollovers: inlanes feed the flippers, outlanes lead to the
+      // drain. Lit arrow inserts, non-physical trigger zones (classic layout
+      // dressing — no new collision geometry near the flippers).
+      const laneRollovers = [
+        { x: 150, y: 772, r: 12, kind: "out", side: -1, lit: false },
+        { x: 196, y: 716, r: 12, kind: "in", side: -1, lit: false },
+        { x: 404, y: 716, r: 12, kind: "in", side: 1, lit: false },
+        { x: 450, y: 772, r: 12, kind: "out", side: 1, lit: false }
+      ];
+
+      // Standup targets flanking the pop bumpers. Hitting one lights it;
+      // spelling D-O-E pays a bonus, arms the mag save and relights the bank.
       const standups = [
         { x: 150, y: 360, r: 10, lit: false, letter: "D" },
-        { x: 300, y: 250, r: 10, lit: false, letter: "E" },
-        { x: 405, y: 400, r: 10, lit: false, letter: "R" }
+        { x: 300, y: 250, r: 10, lit: false, letter: "O" },
+        { x: 405, y: 400, r: 10, lit: false, letter: "E" }
+      ];
+
+      // Left return lane in the upper-left corner: two rollovers spelling E-H.
+      // Completing them pays and arms the Trail Save — a second route to a ball
+      // save. Non-physical trigger zones, so nothing new can trap the ball.
+      const leftLanes = [
+        { x: 92, y: 168, r: 9, letter: "E", lit: false },
+        { x: 92, y: 232, r: 9, letter: "H", lit: false }
       ];
 
       const spinner = { x: 424, y: 468, r: 20, angle: 0, spin: 0, cooldown: 0 };
@@ -1003,6 +1029,9 @@
       let standupResetTimer = 0;
       let superPlungeArmed = false;
       let orbitCooldown = 0;
+      let litLane = 1;          // which top lane is currently lit (lane change)
+      let laneChangeFlash = 0;
+      let leftLaneResetTimer = 0;
       let tiltMeter = 0;
       let tilted = false;
       let magSaveArmed = false;
@@ -1248,6 +1277,7 @@
         comboCount = 0;
         comboTimer = 0;
         standupResetTimer = 0;
+        leftLaneResetTimer = 0;
         superPlungeArmed = false;
         tiltMeter = 0;
         tilted = false;
@@ -1269,6 +1299,11 @@
         dropTargets.forEach(target => { target.down = false; });
         rollovers.forEach(rollover => { rollover.lit = false; });
         standups.forEach(standup => { standup.lit = false; });
+        leftLanes.forEach(lane => { lane.lit = false; });
+        topLanes.forEach(lane => { lane.lit = false; });
+        laneRollovers.forEach(lane => { lane.lit = false; });
+        litLane = 1;
+        laneChangeFlash = 0;
         slings.forEach(sling => {
           sling.contact = false;
           sling.cooldown = 0;
@@ -1451,6 +1486,15 @@
       // Between balls, tally the collectibles left lit and count them up before
       // the next ball spawns. If nothing is lit, skip the ceremony and fall back
       // to the plain 1.2s reset pause.
+      // Bonus earned so far this ball, before the multiplier — drives the
+      // painted bonus ladder on the playfield.
+      function pendingBonusValue() {
+        return hunt.size * 1000
+          + dropTargets.filter(t => t.down).length * 800
+          + rollovers.filter(r => r.lit).length * 600
+          + bumperHits * 120;
+      }
+
       function beginBonus() {
         const items = [];
         if (hunt.size) items.push({ label: "HUNT LETTERS", count: hunt.size, per: 1000 });
@@ -1849,7 +1893,14 @@
           flipper.target = down ? Math.PI + .5 : Math.PI - .38;
         }
         button.classList.toggle("is-down", down);
-        if (down) hitSound("flipper");
+        if (down) {
+          hitSound("flipper");
+          // Classic lane change: a flipper press rotates which top lane is lit.
+          if (state === "playing" && !paused) {
+            litLane = (litLane + (side === "left" ? -1 : 1) + topLanes.length) % topLanes.length;
+            laneChangeFlash = 0.5;
+          }
+        }
       }
 
       function bindHold(button, onDown, onUp) {
@@ -2304,7 +2355,7 @@
             registerCombo(standup.x, standup.y);
             navigator.vibrate?.(8);
             if (standups.every(s => s.lit)) {
-              addScore(3000, 300, 320, "STANDUPS +3,000");
+              addScore(3000, 300, 320, "D-O-E +3,000");
               if (!magSaveArmed) armMagSave();
               standupResetTimer = 1.2;
               hitSound("fever");
@@ -2389,6 +2440,70 @@
               }
               rolloverResetTimer = 1.2;
             }
+          }
+        });
+
+        // Top lane bank (T-A-G). Rolling through the lit lane pays double and
+        // completing the bank advances the bonus multiplier, classic-style.
+        topLanes.forEach((lane, index) => {
+          const dx = ball.x - lane.x;
+          const dy = ball.y - lane.y;
+          // generous margin: a ball hugging the top wall still rolls the lane
+          const triggerRadius = ball.r + lane.r + 8;
+          if (!lane.lit && dx * dx + dy * dy < triggerRadius * triggerRadius) {
+            lane.lit = true;
+            const wasLit = index === litLane;
+            addScore(wasLit ? 2000 : 750, lane.x, lane.y + 26, `${lane.letter} +${wasLit ? "2,000" : "750"}`);
+            flashes.push({ id: `tl${index}`, x: lane.x, y: lane.y, life: .45, max: .45 });
+            tone(700 + index * 110, .07, "triangle", .035);
+            registerCombo(lane.x, lane.y);
+            navigator.vibrate?.(8);
+            if (topLanes.every(item => item.lit)) {
+              bonusMultiplier = Math.min(5, bonusMultiplier + 1);
+              announceBonus(`T-A-G • BONUS ×${bonusMultiplier}`, 300, 150, "#9be8a0");
+              topLanes.forEach(item => { item.lit = false; });
+              updateHud();
+            }
+          }
+        });
+
+        // Left return lane (E-H): completing it arms the Trail Save.
+        leftLanes.forEach((lane, index) => {
+          const dx = ball.x - lane.x;
+          const dy = ball.y - lane.y;
+          const triggerRadius = ball.r + lane.r + 5;
+          if (!lane.lit && dx * dx + dy * dy < triggerRadius * triggerRadius) {
+            lane.lit = true;
+            addScore(900, lane.x + 26, lane.y - 16, `${lane.letter} +900`);
+            flashes.push({ id: `ll${index}`, x: lane.x, y: lane.y, life: .45, max: .45 });
+            tone(560 + index * 130, .07, "triangle", .035);
+            registerCombo(lane.x, lane.y);
+            navigator.vibrate?.(8);
+            if (leftLanes.every(item => item.lit)) {
+              addScore(4000, 120, 200, "E-H! +4,000");
+              if (!ballSaveArmed) armTrailSave();
+              leftLaneResetTimer = 1.4;
+            }
+          }
+        });
+
+        // Return lanes: inlanes feed the flippers, outlanes head for the drain.
+        laneRollovers.forEach((lane, index) => {
+          const dx = ball.x - lane.x;
+          const dy = ball.y - lane.y;
+          const triggerRadius = ball.r + lane.r + 4;
+          if (!lane.lit && dx * dx + dy * dy < triggerRadius * triggerRadius) {
+            lane.lit = true;
+            flashes.push({ id: `lr${index}`, x: lane.x, y: lane.y, life: .5, max: .5 });
+            tone(lane.kind === "in" ? 880 : 330, .06, "triangle", .03);
+            if (lane.kind === "in") {
+              addScore(600, lane.x, lane.y - 20, "INLANE +600");
+              registerCombo(lane.x, lane.y);
+            } else {
+              // small consolation on the way out, like a real outlane
+              addScore(1500, lane.x, lane.y - 20, "OUTLANE +1,500");
+            }
+            setTimeout(() => { lane.lit = false; }, 900);
           }
         });
 
@@ -2708,8 +2823,14 @@
           if (standupResetTimer <= 0) standups.forEach(standup => { standup.lit = false; });
         }
 
+        if (leftLaneResetTimer > 0) {
+          leftLaneResetTimer -= dt;
+          if (leftLaneResetTimer <= 0) leftLanes.forEach(lane => { lane.lit = false; });
+        }
+
         orbitCooldown = Math.max(0, orbitCooldown - dt);
         tiltMeter = Math.max(0, tiltMeter - dt * 0.7);
+        laneChangeFlash = Math.max(0, laneChangeFlash - dt * 2);
         if (modeActive && state === "playing" && !paused) {
           const prev = Math.ceil(modeTimer);
           modeTimer = Math.max(0, modeTimer - dt);
@@ -2783,6 +2904,7 @@
         ctx.lineTo(478, 57);
         ctx.lineTo(139, 57);
         ctx.lineTo(96, 80);
+        ctx.lineTo(56, 132);   // close the top-left corner (this wall collides but was never painted)
         ctx.stroke();
         ctx.strokeStyle = "rgba(228,224,201,.48)";
         ctx.lineWidth = 4;
@@ -2865,26 +2987,6 @@
             ctx.fillRect(x + 1, y + 1, 1.3, 1.3);
           }
         }
-        ctx.restore();
-      }
-
-      function drawTopper() {
-        ctx.save();
-        ctx.translate(300, 92);
-        ctx.textAlign = "center";
-        ctx.fillStyle = "rgba(2,8,7,.76)";
-        roundedRect(ctx, -126, -20, 252, 52, 9);
-        ctx.fill();
-        ctx.strokeStyle = "rgba(216,170,84,.55)";
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-        ctx.fillStyle = "#ff6b2b";
-        ctx.font = "900 12px Arial Narrow, sans-serif";
-        ctx.letterSpacing = "3px";
-        ctx.fillText("PORCUPINE MOUNTAINS", 0, -1);
-        ctx.fillStyle = "#f6e8c2";
-        ctx.font = "900 22px Impact, Arial Narrow, sans-serif";
-        ctx.fillText("BUCK FEVER", 0, 23);
         ctx.restore();
       }
 
@@ -3477,6 +3579,18 @@
           insert(s.x, s.y, 24, "155,232,160", (s.lit ? 0.5 : 0.12) + flashPulse(`u${i}`) * 0.5);
         });
         insert(scoop.x, scoop.y, 30, "255,210,111", 0.12 + scoop.flash * 0.5);
+        topLanes.forEach((lane, i) => {
+          const rgb = lane.lit ? "155,232,160" : i === litLane ? "255,210,111" : "85,215,232";
+          insert(lane.x, lane.y, 30, rgb, (lane.lit || i === litLane ? 0.4 : 0.12) + flashPulse(`tl${i}`) * 0.5);
+        });
+        laneRollovers.forEach((lane, i) => {
+          insert(lane.x, lane.y, 26, lane.kind === "in" ? "85,215,232" : "255,122,50",
+            (lane.lit ? 0.45 : 0.1) + flashPulse(`lr${i}`) * 0.5);
+        });
+        leftLanes.forEach((lane, i) => {
+          insert(lane.x, lane.y, 26, lane.lit ? "155,232,160" : "85,215,232",
+            (lane.lit ? 0.45 : 0.12) + flashPulse(`ll${i}`) * 0.5);
+        });
         bumpers.forEach((b, i) => {
           const rgb = i === 1 ? "85,215,232" : "255,110,45";
           insert(b.x, b.y, b.r + 22, rgb, 0.16 + flashPulse(`b${i}`) * 0.6 + feverBoost * 0.6);
@@ -3636,7 +3750,231 @@
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.font = "900 8px ui-monospace, monospace";
-        ctx.fillText("DEN", 0, scoop.r + 8);
+        ctx.fillText("BLIND", 0, scoop.r + 8);
+        ctx.restore();
+      }
+
+      // Shared insert-arrow shape used by the lane banks.
+      function laneArrow(x, y, up, lit, color, scale = 1) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.scale(scale, up ? scale : -scale);
+        if (lit) {
+          ctx.shadowColor = color;
+          ctx.shadowBlur = 14;
+        }
+        ctx.fillStyle = lit ? color : "rgba(255,255,255,.14)";
+        ctx.beginPath();
+        ctx.moveTo(0, -11);
+        ctx.lineTo(8, -1);
+        ctx.lineTo(3.4, -1);
+        ctx.lineTo(3.4, 10);
+        ctx.lineTo(-3.4, 10);
+        ctx.lineTo(-3.4, -1);
+        ctx.lineTo(-8, -1);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+
+      // Classic top lane bank: wire lane guides, a rollover button per lane and
+      // a lit insert arrow. The currently-lit lane pulses (lane change).
+      function drawTopLanes(time) {
+        ctx.save();
+        ctx.lineCap = "round";
+
+        // ball guides separating the lanes, feeding down into the HUNT bank
+        const guideXs = [145, 223, 302, 380];
+        [["rgba(3,8,7,.85)", 8], ["#9aa7a0", 3.5]].forEach(([color, width]) => {
+          ctx.strokeStyle = color;
+          ctx.lineWidth = width;
+          guideXs.forEach(gx => {
+            ctx.beginPath();
+            ctx.moveTo(gx, 70);
+            ctx.lineTo(gx, 118);
+            ctx.stroke();
+          });
+        });
+
+        topLanes.forEach((lane, i) => {
+          const flash = flashes.find(f => f.id === `tl${i}`);
+          const isLit = i === litLane;
+          const pulse = isLit ? 0.55 + 0.45 * Math.sin(time * 0.006) : 0;
+          const color = lane.lit ? "#9be8a0" : isLit ? "#ffd26f" : "#55d7e8";
+
+          laneArrow(lane.x, lane.y + 21, false, lane.lit || isLit || Boolean(flash), color, 0.62);
+
+          // rollover button
+          ctx.save();
+          ctx.translate(lane.x, lane.y);
+          if (lane.lit || flash || isLit) {
+            ctx.shadowColor = color;
+            ctx.shadowBlur = flash ? 20 : 10 + pulse * 10;
+          }
+          ctx.fillStyle = lane.lit ? "#bdf3c1" : "#16241f";
+          ctx.strokeStyle = lane.lit ? "#9be8a0" : isLit ? "#ffd26f" : "rgba(222,230,216,.5)";
+          ctx.lineWidth = isLit ? 3.5 : 2.5;
+          ctx.beginPath();
+          ctx.arc(0, 0, lane.r, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = lane.lit ? "#0b2018" : "#cfdcd4";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.font = "900 13px Impact, Arial Narrow, sans-serif";
+          ctx.fillText(lane.letter, 0, 1);
+          ctx.restore();
+        });
+
+        ctx.restore();
+      }
+
+      // Left return lane filling the upper-left corner: painted ball guides and
+      // two E-H rollovers, fed by shots that come around the top-left orbit.
+      function drawLeftLane() {
+        ctx.save();
+        ctx.lineCap = "round";
+        [["rgba(3,8,7,.85)", 8], ["#9aa7a0", 3.5]].forEach(([color, width]) => {
+          ctx.strokeStyle = color;
+          ctx.lineWidth = width;
+          ctx.beginPath();
+          ctx.moveTo(116, 138);
+          ctx.lineTo(116, 268);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(70, 150);
+          ctx.lineTo(70, 262);
+          ctx.stroke();
+        });
+
+        leftLanes.forEach((lane, i) => {
+          const flash = flashes.find(f => f.id === `ll${i}`);
+          const color = lane.lit ? "#9be8a0" : "#55d7e8";
+          ctx.save();
+          ctx.translate(lane.x, lane.y);
+          if (lane.lit || flash) {
+            ctx.shadowColor = color;
+            ctx.shadowBlur = flash ? 18 : 10;
+          }
+          ctx.fillStyle = lane.lit ? "#bdf3c1" : "#16241f";
+          ctx.strokeStyle = lane.lit ? "#9be8a0" : "rgba(222,230,216,.5)";
+          ctx.lineWidth = 2.5;
+          ctx.beginPath();
+          ctx.arc(0, 0, lane.r, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = lane.lit ? "#0b2018" : "#cfdcd4";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.font = "900 11px Impact, Arial Narrow, sans-serif";
+          ctx.fillText(lane.letter, 0, 1);
+          ctx.restore();
+        });
+
+        ctx.restore();
+      }
+
+      // Lit arrow inserts in the inlanes and outlanes, the classic bottom-of-
+      // playfield dressing that tells you where the ball is headed.
+      function drawReturnLanes(time) {
+        laneRollovers.forEach((lane, i) => {
+          const flash = flashes.find(f => f.id === `lr${i}`);
+          const isIn = lane.kind === "in";
+          const color = isIn ? "#55d7e8" : "#ff7a32";
+          const lit = lane.lit || Boolean(flash);
+          laneArrow(lane.x, lane.y, isIn, lit, color, isIn ? 1.05 : 0.95);
+          ctx.save();
+          ctx.fillStyle = lit ? color : "rgba(230,238,230,.3)";
+          ctx.textAlign = "center";
+          ctx.font = "900 7px ui-monospace, monospace";
+          ctx.fillText(isIn ? "IN" : "OUT", lane.x, lane.y + (isIn ? 22 : -18));
+          ctx.restore();
+        });
+      }
+
+      // Painted bonus ladder down the left rail: live bonus value plus the
+      // classic multiplier inserts.
+      function drawBonusLadder() {
+        const rungs = [
+          { label: "20K", at: 20000 },
+          { label: "15K", at: 15000 },
+          { label: "10K", at: 10000 },
+          { label: "5K", at: 5000 },
+          { label: "2K", at: 2000 }
+        ];
+        const pending = pendingBonusValue();
+        ctx.save();
+        ctx.translate(88, 300);
+        ctx.textAlign = "center";
+        ctx.fillStyle = "rgba(216,170,84,.8)";
+        ctx.font = "900 9px Arial Narrow, sans-serif";
+        ctx.fillText("BONUS", 0, -14);
+
+        rungs.forEach((rung, i) => {
+          const y = i * 22;
+          const on = pending >= rung.at;
+          ctx.fillStyle = on ? "rgba(255,210,111,.9)" : "rgba(255,255,255,.07)";
+          if (on) {
+            ctx.shadowColor = "#ffd26f";
+            ctx.shadowBlur = 10;
+          }
+          roundedRect(ctx, -19, y, 38, 16, 4);
+          ctx.fill();
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = on ? "#241703" : "rgba(230,238,230,.45)";
+          ctx.font = "900 10px ui-monospace, monospace";
+          ctx.fillText(rung.label, 0, y + 11);
+        });
+
+        // multiplier inserts
+        const y0 = rungs.length * 22 + 8;
+        [2, 3, 4, 5].forEach((m, i) => {
+          const on = bonusMultiplier >= m;
+          const x = -18 + i * 12;
+          ctx.fillStyle = on ? "#9be8a0" : "rgba(255,255,255,.09)";
+          if (on) {
+            ctx.shadowColor = "#9be8a0";
+            ctx.shadowBlur = 8;
+          }
+          ctx.beginPath();
+          ctx.arc(x, y0 + 6, 5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = on ? "#0b2018" : "rgba(230,238,230,.4)";
+          ctx.font = "900 6px ui-monospace, monospace";
+          ctx.fillText(`${m}X`, x, y0 + 8);
+        });
+        ctx.restore();
+      }
+
+      // Classic apron: the flat plate closing the bottom of the playfield, with
+      // the drain gap between the wings.
+      function drawApron() {
+        ctx.save();
+        const plate = (pts, label, lx, ly) => {
+          ctx.beginPath();
+          ctx.moveTo(pts[0][0], pts[0][1]);
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+          ctx.closePath();
+          const g = ctx.createLinearGradient(0, 820, 0, 900);
+          g.addColorStop(0, "#2b3531");
+          g.addColorStop(1, "#131b18");
+          ctx.fillStyle = g;
+          ctx.fill();
+          ctx.strokeStyle = "rgba(226,233,222,.5)";
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          ctx.save();
+          ctx.fillStyle = "rgba(216,170,84,.75)";
+          ctx.textAlign = "center";
+          ctx.font = "900 9px Arial Narrow, sans-serif";
+          ctx.fillText(label, lx, ly);
+          ctx.restore();
+        };
+        plate([[218, 822], [241, 836], [241, 900], [150, 900], [150, 860]], "BUCK FEVER", 196, 870);
+        plate([[382, 822], [359, 836], [359, 900], [450, 900], [450, 860]], "PORCUPINE MTNS", 404, 870);
         ctx.restore();
       }
 
@@ -3730,8 +4068,11 @@
         drawBackground();
         drawGI(time);
         drawTracks();
-        drawTopper();
+        drawBonusLadder();
+        drawReturnLanes(time);
         drawDMD(time);
+        drawTopLanes(time);
+        drawLeftLane();
         drawHuntTargets();
         bumpers.forEach((bumper, index) => drawBumper(bumper, index, time));
         drawPinballHardware();
@@ -3751,6 +4092,7 @@
         drawFlipper(flippers.left);
         drawFlipper(flippers.right);
         drawFlipper(flippers.upper);
+        drawApron();
         drawPlunger();
         drawBall();
         drawEffects();
@@ -3824,6 +4166,11 @@
           Number(charging),
           Number(Boolean(ball?.inLane && !ball.launched)),
           launchButton.dataset.state || ""
+        ].join(",");
+        canvas.dataset.lanes = [
+          litLane,
+          topLanes.filter(l => l.lit).length,
+          laneRollovers.filter(l => l.lit).length
         ].join(",");
         canvas.dataset.bonus = [
           scoreMultiplier,
