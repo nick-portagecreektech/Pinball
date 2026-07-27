@@ -978,17 +978,22 @@
       // High scores: a shared, read-only board fetched from scores.json in the
       // repo (everyone sees the same list), with a local cache as offline
       // fallback and an arcade-style initials entry for qualifying scores.
+      //
+      // SCORES_API: set this to the deployed Cloudflare Worker URL (see
+      // leaderboard-worker/) to post scores automatically and read the live
+      // board. Leave "" to fall back to the static read-only scores.json.
+      const SCORES_API = "https://nickportagecreektech--b9341f0088b811f188e41607ee4eb77e.web.val.run";
       const SCORES_URL = "scores.json";
       const SCORES_KEY = "buck-fever-scores";
       const MAX_SCORES = 10;
       const INITIAL_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-      const REPO_ISSUES = "https://github.com/nick-portagecreektech/Pinball/issues/new";
       let sharedScores = [];
       let localScores = loadLocalScores();
       let initials = [0, 0, 0];
       let initialSlot = 0;
       let pendingScore = 0;
       let pendingEntry = null;
+      let submitStatus = "";
       let ball = null;
       let ballList = [];
       let bonusPending = false;
@@ -1096,11 +1101,32 @@
 
       async function fetchSharedScores() {
         try {
-          const res = await fetch(SCORES_URL, { cache: "no-store" });
+          const res = await fetch(SCORES_API || SCORES_URL, { cache: "no-store" });
           if (!res.ok) return;
           sharedScores = sanitizeScores(await res.json());
           if (state === "intro" || state === "gameover") renderLeaderboard(pendingEntry);
         } catch { /* offline or file:// — fall back to local cache */ }
+      }
+
+      // Auto-post to the shared board (Cloudflare Worker). The response is the
+      // updated board, so the panel refreshes with the entry in place.
+      async function postScore(entry) {
+        if (!SCORES_API) { submitStatus = "saved on this device"; return; }
+        submitStatus = "posting to the camp board…";
+        if (state === "gameover") renderLeaderboard(pendingEntry);
+        try {
+          const res = await fetch(SCORES_API, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(entry)
+          });
+          if (!res.ok) throw new Error("bad response");
+          sharedScores = sanitizeScores(await res.json());
+          submitStatus = "posted to the camp board ✓";
+        } catch {
+          submitStatus = "couldn't reach the board — saved on this device";
+        }
+        if (state === "gameover") renderLeaderboard(pendingEntry);
       }
 
       function qualifies(value) {
@@ -1146,12 +1172,8 @@
             `</div>`
           ).join("");
         }
-        if (pending && youIndex < MAX_SCORES) {
-          const title = encodeURIComponent(`Score: ${pending.name} ${pending.score.toLocaleString()}`);
-          const body = encodeURIComponent(
-            `Add to scores.json:\n\n{ "name": "${pending.name}", "score": ${pending.score} }`
-          );
-          html += `<a class="hiscore-submit" href="${REPO_ISSUES}?title=${title}&body=${body}" target="_blank" rel="noopener">Post ${pending.name} to the camp board →</a>`;
+        if (pending && submitStatus) {
+          html += `<div class="hiscore-submit">${submitStatus}</div>`;
         }
         hiscoresEl.innerHTML = html;
       }
@@ -1621,12 +1643,14 @@
       function submitInitials() {
         const name = initials.map(i => INITIAL_CHARS[i]).join("");
         pendingEntry = { name, score: pendingScore };
+        submitStatus = "";
         // cache locally so the player's board survives offline / between visits
         localScores = sanitizeScores([...localScores, pendingEntry]);
         saveLocalScores();
         tone(523, 0.1, "triangle", 0.04);
         tone(784, 0.14, "triangle", 0.04, 0.09);
         showGameOver();
+        postScore(pendingEntry); // auto-post to the shared board
       }
 
       function addScore(points, x, y, label) {
